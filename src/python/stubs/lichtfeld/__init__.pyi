@@ -332,7 +332,7 @@ def paint_sky_cubemap_mask(mask_path: str, overlay_path: str, face_size: int, x:
 def clear_sky_cubemap_mask(mask_path: str, overlay_path: str, face_size: int) -> dict:
     """Clear one sky cubemap mask face"""
 
-def preview_projection_dome_sky_initialization(manifest_path: str, max_gaussians: int = 50000) -> dict:
+def preview_projection_dome_sky_initialization(manifest_path: str, max_gaussians: int = 250000) -> dict:
     """
     Create/update the visible sky initialization preview from a saved sky mask manifest
     """
@@ -1970,6 +1970,104 @@ class OptimizationParams:
 
     @sky_mask_path.setter
     def sky_mask_path(self, arg: str, /) -> None: ...
+
+    @property
+    def sky_lobe_prior(self) -> bool:
+        """Learn a low-frequency sky color prior for frozen sky splats"""
+
+    @sky_lobe_prior.setter
+    def sky_lobe_prior(self, arg: bool, /) -> None: ...
+
+    @property
+    def sky_lobe_degree(self) -> int:
+        """Sky lobe detail level"""
+
+    @sky_lobe_degree.setter
+    def sky_lobe_degree(self, arg: int, /) -> None: ...
+
+    @property
+    def sky_lobe_lr(self) -> float:
+        """Learning rate for sky lobes"""
+
+    @sky_lobe_lr.setter
+    def sky_lobe_lr(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_lobe_smoothness(self) -> float:
+        """Smoothness regularization for sky lobes"""
+
+    @sky_lobe_smoothness.setter
+    def sky_lobe_smoothness(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_lobe_prefix_strength(self) -> float:
+        """Per-step blend strength applied to frozen sky prefix colors"""
+
+    @sky_lobe_prefix_strength.setter
+    def sky_lobe_prefix_strength(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_lobe_prior_until(self) -> int:
+        """Last iteration for frozen sky prefix color blending"""
+
+    @sky_lobe_prior_until.setter
+    def sky_lobe_prior_until(self, arg: int, /) -> None: ...
+
+    @property
+    def sky_lobe_gate_threshold(self) -> float:
+        """Auto sky-pixel confidence threshold"""
+
+    @sky_lobe_gate_threshold.setter
+    def sky_lobe_gate_threshold(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_prefix_propagation(self) -> bool:
+        """Propagate healthy frozen sky splats into uncovered sky directions"""
+
+    @sky_prefix_propagation.setter
+    def sky_prefix_propagation(self, arg: bool, /) -> None: ...
+
+    @property
+    def sky_prefix_color_strength(self) -> float:
+        """Per-step color blend for sky-prefix propagation"""
+
+    @sky_prefix_color_strength.setter
+    def sky_prefix_color_strength(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_prefix_opacity_strength(self) -> float:
+        """Per-step opacity blend for sky-prefix propagation"""
+
+    @sky_prefix_opacity_strength.setter
+    def sky_prefix_opacity_strength(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_prefix_scale_strength(self) -> float:
+        """Per-step scale blend for sky-prefix propagation"""
+
+    @sky_prefix_scale_strength.setter
+    def sky_prefix_scale_strength(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_prefix_min_opacity(self) -> float:
+        """Minimum propagated sky-prefix opacity"""
+
+    @sky_prefix_min_opacity.setter
+    def sky_prefix_min_opacity(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_prefix_max_scale_factor(self) -> float:
+        """Maximum sky-prefix scale as a fraction of scene scale"""
+
+    @sky_prefix_max_scale_factor.setter
+    def sky_prefix_max_scale_factor(self, arg: float, /) -> None: ...
+
+    @property
+    def sky_prefix_propagation_until(self) -> int:
+        """Last iteration for sky-prefix propagation"""
+
+    @sky_prefix_propagation_until.setter
+    def sky_prefix_propagation_until(self, arg: int, /) -> None: ...
 
     @property
     def random(self) -> bool:

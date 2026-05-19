@@ -32,7 +32,7 @@ FACE_LABELS = {
 
 
 def _encode_rml_path(path: Path | str) -> str:
-    return quote(str(path), safe=_RML_PATH_SAFE_CHARS)
+    return quote(str(path).replace("\\", "/"), safe=_RML_PATH_SAFE_CHARS)
 
 
 def _absolute_path(path: Path | str, base: Path | None = None) -> Path:

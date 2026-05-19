@@ -40,6 +40,7 @@ def panel_modules(monkeypatch):
         sys.path.insert(0, str(source_python))
 
     for module_name in [
+        "lfs_plugins.sky_marker_panel",
         "lfs_plugins.image_preview_panel",
         "lfs_plugins.getting_started_panel",
         "lfs_plugins",
@@ -155,3 +156,17 @@ def test_getting_started_panel_escapes_thumbnail_paths(panel_modules, tmp_path):
 
     expected_thumb = quote(str(thumb_path), safe=_RML_PATH_SAFE_CHARS)
     assert body.properties["decorator"] == f"image({expected_thumb})"
+
+
+def test_sky_marker_image_source_handles_windows_paths(panel_modules):
+    sky_marker = import_module("lfs_plugins.sky_marker_panel")
+
+    source = sky_marker._encode_rml_path(
+        r"C:\Users\Utilisateur\scene output\projection_dome\sky_cubemap\sky_preview_pos_z.png"
+    )
+
+    assert source == (
+        "C:/Users/Utilisateur/scene%20output/projection_dome/"
+        "sky_cubemap/sky_preview_pos_z.png"
+    )
+    assert "%5C" not in source
