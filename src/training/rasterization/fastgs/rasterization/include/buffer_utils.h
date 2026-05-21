@@ -15,6 +15,24 @@ namespace fast_lfs::rasterization {
 
     using InstanceKey = std::uint32_t;
 
+    enum FastGSForwardStatusFlags : unsigned int {
+        kFastGSForwardStatusTileIndexOutOfRange = 1u << 0,
+        kFastGSForwardStatusInstanceWriteMismatch = 1u << 1,
+    };
+
+    struct FastGSForwardStatus {
+        unsigned int flags;
+        unsigned int source_index;
+        unsigned int tile_index;
+        unsigned int expected_count;
+        unsigned int actual_count;
+        unsigned int bounds_x;
+        unsigned int bounds_y;
+        unsigned int bounds_z;
+        unsigned int bounds_w;
+        std::uint64_t value;
+    };
+
     inline int extract_end_bit(uint n) {
         int leading_zeros = 0;
         if ((n & 0xffff0000u) == 0) {
@@ -84,6 +102,7 @@ namespace fast_lfs::rasterization {
         float2* mean2d;
         float4* conic_opacity;
         float3* color;
+        FastGSForwardStatus* forward_status;
 
         static PerPrimitiveBuffers from_blob(char*& blob, int n_primitives) {
             PerPrimitiveBuffers buffers{};
@@ -94,6 +113,7 @@ namespace fast_lfs::rasterization {
             obtain(blob, buffers.mean2d, n_primitives, 128);
             obtain(blob, buffers.conic_opacity, n_primitives, 128);
             obtain(blob, buffers.color, n_primitives, 128);
+            obtain(blob, buffers.forward_status, 1, 128);
             CUDA_CHECK(cub::DeviceScan::InclusiveSum(
                            nullptr, buffers.cub_workspace_size,
                            buffers.n_touched_tiles, buffers.offset,
