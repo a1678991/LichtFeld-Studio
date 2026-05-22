@@ -8,6 +8,7 @@
 #include "rasterization_config.h"
 #include "utils.h"
 #include <cstdint>
+#include <cstdlib>
 #include <cub/cub.cuh>
 #include <cuda_fp16.h>
 #include <iostream>
@@ -21,6 +22,8 @@ namespace fast_lfs::rasterization {
     enum FastGSForwardStatusFlags : unsigned int {
         kFastGSForwardStatusTileIndexOutOfRange = 1u << 0,
         kFastGSForwardStatusInstanceWriteMismatch = 1u << 1,
+        kFastGSForwardStatusPrimitiveIndexOutOfRange = 1u << 2,
+        kFastGSForwardStatusTileInstanceRangeOutOfRange = 1u << 3,
     };
 
     struct FastGSForwardStatus {
@@ -35,6 +38,167 @@ namespace fast_lfs::rasterization {
         unsigned int bounds_w;
         std::uint64_t value;
     };
+
+    __device__ __forceinline__ void report_fastgs_status(
+        FastGSForwardStatus* __restrict__ status,
+        const unsigned int flag,
+        const uint source_index,
+        const uint tile_index,
+        const std::uint64_t value,
+        const uint4 bounds,
+        const uint expected_count,
+        const uint actual_count) {
+        if (!status)
+            return;
+
+        const unsigned int old_flags = atomicOr(&status->flags, flag);
+        if (old_flags == 0) {
+            status->source_index = source_index;
+            status->tile_index = tile_index;
+            status->expected_count = expected_count;
+            status->actual_count = actual_count;
+            status->bounds_x = bounds.x;
+            status->bounds_y = bounds.y;
+            status->bounds_z = bounds.z;
+            status->bounds_w = bounds.w;
+            status->value = value;
+        }
+    }
+
+    inline std::string describe_fastgs_status_flags(unsigned int flags) {
+        std::string result;
+        const auto append = [&result](const char* name) {
+            if (!result.empty()) {
+                result += ", ";
+            }
+            result += name;
+        };
+
+        if ((flags & kFastGSForwardStatusTileIndexOutOfRange) != 0) {
+            append("tile index out of range");
+        }
+        if ((flags & kFastGSForwardStatusInstanceWriteMismatch) != 0) {
+            append("instance write mismatch");
+        }
+        if ((flags & kFastGSForwardStatusPrimitiveIndexOutOfRange) != 0) {
+            append("primitive index out of range");
+        }
+        if ((flags & kFastGSForwardStatusTileInstanceRangeOutOfRange) != 0) {
+            append("tile instance range out of range");
+        }
+        if (result.empty()) {
+            result = "unknown status flag " + std::to_string(flags);
+        }
+        return result;
+    }
+
+    inline std::string format_fastgs_forward_status(
+        const FastGSForwardStatus& status,
+        const char* phase,
+        const uint64_t n_primitives,
+        const uint64_t n_tiles) {
+        if (status.flags == 0) {
+            return {};
+        }
+
+        return "FastGS " + std::string(phase) +
+               " detected invalid rasterization state: " +
+               describe_fastgs_status_flags(status.flags) +
+               " (flags=" + std::to_string(status.flags) +
+               ", source_index=" + std::to_string(status.source_index) +
+               ", tile_index=" + std::to_string(status.tile_index) +
+               ", expected=" + std::to_string(status.expected_count) +
+               ", actual=" + std::to_string(status.actual_count) +
+               ", value=" + std::to_string(status.value) +
+               ", bounds=[" + std::to_string(status.bounds_x) + "," +
+               std::to_string(status.bounds_y) + "," +
+               std::to_string(status.bounds_z) + "," +
+               std::to_string(status.bounds_w) + "]" +
+               ", n_primitives=" + std::to_string(n_primitives) +
+               ", n_tiles=" + std::to_string(n_tiles) + ")";
+    }
+
+    inline bool try_read_fastgs_forward_status(
+        const FastGSForwardStatus* device_status,
+        FastGSForwardStatus& status) {
+        if (!device_status) {
+            return false;
+        }
+        const cudaError_t err = cudaMemcpy(&status, device_status, sizeof(status), cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess) {
+            cudaGetLastError();
+            return false;
+        }
+        return true;
+    }
+
+    inline void throw_if_fastgs_forward_status(
+        const FastGSForwardStatus* device_status,
+        const char* phase,
+        const uint64_t n_primitives,
+        const uint64_t n_tiles) {
+        FastGSForwardStatus status{};
+        if (!try_read_fastgs_forward_status(device_status, status)) {
+            return;
+        }
+        const std::string message = format_fastgs_forward_status(status, phase, n_primitives, n_tiles);
+        if (!message.empty()) {
+            throw std::runtime_error(message);
+        }
+    }
+
+    inline void check_cuda_with_fastgs_status(
+        const cudaError_t err,
+        const char* name,
+        const FastGSForwardStatus* device_status,
+        const char* phase,
+        const uint64_t n_primitives,
+        const uint64_t n_tiles) {
+        if (err == cudaSuccess) {
+            return;
+        }
+
+        std::string message = std::string("CUDA error in ") + name + " - " +
+                              cudaGetErrorName(err) + ": " + cudaGetErrorString(err);
+        FastGSForwardStatus status{};
+        if (try_read_fastgs_forward_status(device_status, status)) {
+            const std::string status_message = format_fastgs_forward_status(status, phase, n_primitives, n_tiles);
+            if (!status_message.empty()) {
+                message += "; " + status_message;
+            }
+        }
+
+        std::cerr << "\n[CUDA ERROR] " << message;
+        throw std::runtime_error(message);
+    }
+
+    inline bool fastgs_diag_sync_enabled() {
+        static const bool enabled = [] {
+            const char* raw = std::getenv("LFS_FASTGS_DIAG_SYNC");
+            return raw != nullptr &&
+                   raw[0] != '\0' &&
+                   raw[0] != '0' &&
+                   raw[0] != 'f' &&
+                   raw[0] != 'F' &&
+                   raw[0] != 'n' &&
+                   raw[0] != 'N';
+        }();
+        return enabled;
+    }
+
+    inline void sync_fastgs_phase_if_requested(
+        const char* name,
+        const FastGSForwardStatus* device_status,
+        const char* phase,
+        const uint64_t n_primitives,
+        const uint64_t n_tiles) {
+        if (!fastgs_diag_sync_enabled()) {
+            return;
+        }
+        check_cuda_with_fastgs_status(
+            cudaDeviceSynchronize(), name, device_status, phase, n_primitives, n_tiles);
+        throw_if_fastgs_forward_status(device_status, phase, n_primitives, n_tiles);
+    }
 
     inline int extract_end_bit(uint n) {
         int leading_zeros = 0;

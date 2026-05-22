@@ -24,21 +24,15 @@ namespace fast_lfs::rasterization::kernels::forward {
         const uint4 bounds,
         const uint expected_count,
         const uint actual_count) {
-        if (!status)
-            return;
-
-        const unsigned int old_flags = atomicOr(&status->flags, flag);
-        if (old_flags == 0) {
-            status->source_index = source_index;
-            status->tile_index = tile_index;
-            status->expected_count = expected_count;
-            status->actual_count = actual_count;
-            status->bounds_x = bounds.x;
-            status->bounds_y = bounds.y;
-            status->bounds_z = bounds.z;
-            status->bounds_w = bounds.w;
-            status->value = value;
-        }
+        report_fastgs_status(
+            status,
+            flag,
+            source_index,
+            tile_index,
+            value,
+            bounds,
+            expected_count,
+            actual_count);
     }
 
     __device__ __forceinline__ uint quantize_depth_key(float depth, const uint depth_bits) {

@@ -444,6 +444,8 @@ namespace fast_lfs::rasterization::kernels::backward {
         float3* __restrict__ grad_color,
         float* __restrict__ densification_info,
         const float* __restrict__ densification_error_map,
+        FastGSForwardStatus* __restrict__ status,
+        const uint n_instances,
         const uint n_primitives,
         const uint width,
         const uint height,
@@ -454,6 +456,20 @@ namespace fast_lfs::rasterization::kernels::backward {
         const uint tile_idx = block.group_index().x;
         const uint thread_rank = block.thread_rank();
         const uint2 tile_instance_range = tile_instance_ranges[tile_idx];
+        if (tile_instance_range.x > tile_instance_range.y || tile_instance_range.y > n_instances) {
+            if (thread_rank == 0) {
+                report_fastgs_status(
+                    status,
+                    kFastGSForwardStatusTileInstanceRangeOutOfRange,
+                    tile_idx,
+                    tile_idx,
+                    (static_cast<std::uint64_t>(tile_instance_range.x) << 32) | tile_instance_range.y,
+                    make_uint4(tile_instance_range.x, tile_instance_range.y, n_instances, 0),
+                    n_instances,
+                    tile_instance_range.y);
+            }
+            return;
+        }
         const int tile_n_primitives = tile_instance_range.y - tile_instance_range.x;
         if (tile_n_primitives <= 0)
             return;
@@ -500,7 +516,7 @@ namespace fast_lfs::rasterization::kernels::backward {
                                               ? (tile_n_primitives - batch_base)
                                               : splat_batch_size;
             const int lane = static_cast<int>(thread_rank);
-            const bool valid_splat = lane < n_splats_in_batch;
+            bool valid_splat = lane < n_splats_in_batch;
             const int tile_primitive_idx = tile_n_primitives - batch_base - lane - 1;
 
             uint primitive_idx = 0;
@@ -511,17 +527,36 @@ namespace fast_lfs::rasterization::kernels::backward {
             float3 color_grad_factor = make_float3(0.0f);
 
             if (valid_splat) {
-                primitive_idx = instance_primitive_indices[tile_instance_range.x + tile_primitive_idx];
-                mean2d = primitive_mean2d[primitive_idx];
-                const float4 conic_opacity = primitive_conic_opacity[primitive_idx];
-                conic = make_float3(conic_opacity);
-                compensated_opacity = conic_opacity.w;
-                const float3 color_unclamped = primitive_color[primitive_idx];
-                color = fminf(fmaxf(color_unclamped, 0.0f), config::max_blend_color);
-                color_grad_factor = make_float3(
-                    (color_unclamped.x >= 0.0f && color_unclamped.x <= config::max_blend_color) ? 1.0f : 0.0f,
-                    (color_unclamped.y >= 0.0f && color_unclamped.y <= config::max_blend_color) ? 1.0f : 0.0f,
-                    (color_unclamped.z >= 0.0f && color_unclamped.z <= config::max_blend_color) ? 1.0f : 0.0f);
+                const uint instance_idx = tile_instance_range.x + static_cast<uint>(tile_primitive_idx);
+                primitive_idx = instance_primitive_indices[instance_idx];
+                if (primitive_idx >= n_primitives) {
+                    report_fastgs_status(
+                        status,
+                        kFastGSForwardStatusPrimitiveIndexOutOfRange,
+                        instance_idx,
+                        tile_idx,
+                        primitive_idx,
+                        make_uint4(
+                            tile_instance_range.x,
+                            tile_instance_range.y,
+                            static_cast<uint>(tile_primitive_idx),
+                            n_instances),
+                        n_primitives,
+                        primitive_idx);
+                    valid_splat = false;
+                }
+                if (valid_splat) {
+                    mean2d = primitive_mean2d[primitive_idx];
+                    const float4 conic_opacity = primitive_conic_opacity[primitive_idx];
+                    conic = make_float3(conic_opacity);
+                    compensated_opacity = conic_opacity.w;
+                    const float3 color_unclamped = primitive_color[primitive_idx];
+                    color = fminf(fmaxf(color_unclamped, 0.0f), config::max_blend_color);
+                    color_grad_factor = make_float3(
+                        (color_unclamped.x >= 0.0f && color_unclamped.x <= config::max_blend_color) ? 1.0f : 0.0f,
+                        (color_unclamped.y >= 0.0f && color_unclamped.y <= config::max_blend_color) ? 1.0f : 0.0f,
+                        (color_unclamped.z >= 0.0f && color_unclamped.z <= config::max_blend_color) ? 1.0f : 0.0f);
+                }
             }
 
             BlendBackwardAccum accum = make_zero_blend_backward_accum();
