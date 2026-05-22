@@ -254,6 +254,14 @@ namespace lfs::vis {
         lfs::geometry::EuclideanTransform depth_filter_transform;
     };
 
+    inline void enforceProjectionBackend(RenderSettings& settings) {
+        if (!settings.equirectangular) {
+            return;
+        }
+        settings.raster_backend = lfs::rendering::GaussianRasterBackend::ThreeDgut;
+        settings.gut = true;
+    }
+
     [[nodiscard]] inline bool environmentBackgroundEnabled(const RenderSettings& settings) {
         return settings.environment_mode == EnvironmentBackgroundMode::Equirectangular &&
                !settings.environment_map_path.empty();

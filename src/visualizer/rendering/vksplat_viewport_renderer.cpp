@@ -38,6 +38,7 @@ namespace lfs::vis {
 
         constexpr std::uint32_t kVkSplatCameraModelPinhole = 0u;
         constexpr std::uint32_t kVkSplatCameraModelOrthographic = 1u;
+        constexpr std::uint32_t kVkSplatCameraModelEquirectangular = 3u;
         constexpr std::uint32_t kVkSplatProjectionModeShift = 8u;
         constexpr std::uint32_t kVkSplatProjectionModeGut = 1u;
 
@@ -67,15 +68,21 @@ namespace lfs::vis {
             return std::format("{} failed: {}", operation, vkResultToString(result));
         }
 
-        [[nodiscard]] std::uint32_t vksplatBaseCameraModel(const lfs::rendering::FrameView& frame_view) {
+        [[nodiscard]] std::uint32_t vksplatBaseCameraModel(
+            const lfs::rendering::FrameView& frame_view,
+            const bool equirectangular) {
+            if (equirectangular) {
+                return kVkSplatCameraModelEquirectangular;
+            }
             return frame_view.orthographic ? kVkSplatCameraModelOrthographic
                                            : kVkSplatCameraModelPinhole;
         }
 
         [[nodiscard]] std::uint32_t packedVksplatCameraModel(
             const lfs::rendering::FrameView& frame_view,
+            const bool equirectangular,
             const bool gut) {
-            return vksplatBaseCameraModel(frame_view) |
+            return vksplatBaseCameraModel(frame_view, equirectangular) |
                    (gut ? (kVkSplatProjectionModeGut << kVkSplatProjectionModeShift) : 0u);
         }
 
@@ -670,6 +677,7 @@ namespace lfs::vis {
             const int active_sh_degree,
             const std::uint32_t shN_layout_slots,
             const std::size_t num_splats,
+            const bool equirectangular,
             const bool gut) {
             (void)scene;
             uniforms = {};
@@ -680,7 +688,7 @@ namespace lfs::vis {
             uniforms.num_splats = static_cast<std::uint32_t>(num_splats);
             uniforms.active_sh = static_cast<std::uint32_t>(active_sh_degree);
             uniforms.shN_layout_slots = shN_layout_slots;
-            uniforms.camera_model = packedVksplatCameraModel(frame_view, gut);
+            uniforms.camera_model = packedVksplatCameraModel(frame_view, equirectangular, gut);
 
             if (frame_view.orthographic) {
                 const float ortho_scale =
@@ -2073,8 +2081,8 @@ namespace lfs::vis {
         if (size.x <= 0 || size.y <= 0) {
             return std::unexpected("VkSplat selection query received an invalid viewport size");
         }
-        if (request.equirectangular) {
-            return std::unexpected("VkSplat selection query supports pinhole cameras, not equirectangular cameras");
+        if (request.equirectangular && !request.gut) {
+            return std::unexpected("VkSplat equirectangular selection requires the 3DGUT backend");
         }
         if (request.primitives.empty()) {
             return std::unexpected("VkSplat selection query requires at least one primitive");
@@ -2222,6 +2230,7 @@ namespace lfs::vis {
                                       0,
                                       0,
                                       num_splats,
+                                      request.equirectangular,
                                       request.gut);
         VulkanGSSelectionMaskUniforms selection_uniforms{};
         selection_uniforms.num_splats = static_cast<std::uint32_t>(num_splats);
@@ -2289,8 +2298,8 @@ namespace lfs::vis {
         if (size.x <= 0 || size.y <= 0) {
             return std::unexpected("VkSplat received an invalid viewport size");
         }
-        if (request.equirectangular) {
-            return std::unexpected("VkSplat forward path supports pinhole cameras, not equirectangular cameras");
+        if (request.equirectangular && !request.gut) {
+            return std::unexpected("VkSplat equirectangular rendering requires the 3DGUT backend");
         }
         if (!context.externalMemoryInteropEnabled()) {
             return std::unexpected("VkSplat forward path requires CUDA/Vulkan external-memory interop");
@@ -2343,6 +2352,7 @@ namespace lfs::vis {
                                       lfs::core::sh_float4_slots_for_rest(
                                           static_cast<std::uint32_t>(splat_data.max_sh_coeffs_rest())),
                                       buffers_.num_splats,
+                                      request.equirectangular,
                                       request.gut);
         uniforms.step = static_cast<std::uint32_t>(modelTransformCount(request.scene.model_transforms));
 

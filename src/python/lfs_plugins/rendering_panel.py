@@ -256,6 +256,7 @@ class RenderingPanel(Panel):
         self._simplify_progress_stage = ""
         self._simplify_error_text = ""
         self._last_environment_state = None
+        self._last_projection_state = None
         self._last_custom_environment_map_path = ""
         self._escape_revert = w.EscapeRevertController()
         self._scrub_fields = ScrubFieldController(
@@ -306,9 +307,14 @@ class RenderingPanel(Panel):
         self._transform_controls.bind_model(model)
 
         for prop_id in BOOL_PROPS:
-            model.bind(prop_id,
-                       lambda p=prop_id: getattr(s(), p, False),
-                       lambda v, p=prop_id: setattr(s(), p, v) if s() else None)
+            if prop_id == "equirectangular":
+                model.bind(prop_id,
+                           lambda p=prop_id: getattr(s(), p, False),
+                           lambda v: self._set_equirectangular(v))
+            else:
+                model.bind(prop_id,
+                           lambda p=prop_id: getattr(s(), p, False),
+                           lambda v, p=prop_id: setattr(s(), p, v) if s() else None)
 
         for prop_id in SLIDER_PROPS:
             model.bind(prop_id,
@@ -499,6 +505,7 @@ class RenderingPanel(Panel):
         dirty = False
         dirty |= self._transform_controls.update(doc)
         dirty |= self._sync_environment_state()
+        dirty |= self._sync_projection_state()
         for prop_id in COLOR_PROPS:
             val = getattr(s, prop_id)
             key = (prop_id, int(val[0] * 255), int(val[1] * 255), int(val[2] * 255))
@@ -540,6 +547,26 @@ class RenderingPanel(Panel):
         self._dirty_environment_bindings()
         return True
 
+    def _projection_state_snapshot(self):
+        settings = lf.get_render_settings()
+        if not settings:
+            return None
+        return (
+            _normalize_raster_backend(getattr(settings, "raster_backend", "")),
+            bool(getattr(settings, "equirectangular", False)),
+        )
+
+    def _dirty_projection_bindings(self):
+        self._dirty_model("raster_backend", "equirectangular")
+
+    def _sync_projection_state(self):
+        state = self._projection_state_snapshot()
+        if state == self._last_projection_state:
+            return False
+        self._last_projection_state = state
+        self._dirty_projection_bindings()
+        return True
+
     def _set_environment_mode(self, value):
         settings = lf.get_render_settings()
         if not settings:
@@ -553,6 +580,18 @@ class RenderingPanel(Panel):
             return
         backend = _normalize_raster_backend(value)
         settings.raster_backend = backend
+        self._sync_projection_state()
+
+    def _set_equirectangular(self, value):
+        settings = lf.get_render_settings()
+        if not settings:
+            return
+        enabled = bool(value)
+        current_backend = _normalize_raster_backend(getattr(settings, "raster_backend", ""))
+        if enabled and current_backend != "3dgut":
+            settings.raster_backend = "3dgut"
+        settings.equirectangular = enabled
+        self._sync_projection_state()
 
     def _environment_map_is_custom(self):
         settings = lf.get_render_settings()

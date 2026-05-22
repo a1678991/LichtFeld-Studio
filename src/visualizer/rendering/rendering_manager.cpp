@@ -154,6 +154,7 @@ namespace lfs::vis {
                                            : lfs::rendering::normalizeViewerRasterBackend(
                                                  settings_.raster_backend, settings_.gut);
             settings_.gut = lfs::rendering::isGutBackend(settings_.raster_backend);
+            enforceProjectionBackend(settings_);
             settings_.grid_plane = clampGridPlane(settings_.grid_plane);
             if (split_view_service_.isIndependentDualActive(settings_)) {
                 if (grid_plane_changed) {

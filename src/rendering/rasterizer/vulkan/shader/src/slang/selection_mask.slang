@@ -109,7 +109,7 @@ bool project_gut_splat(
     float3 scales = exp(read_t3_float3(splat_idx, scaling_raw));
     float3x3 rotation = quat_to_rotmat(normalize(rotations[splat_idx]));
 
-    float2 mean2d = float2(0.0);
+    float2 image_points[NUM_SIGMA_POINTS];
     for (uint i = 0u; i < NUM_SIGMA_POINTS; ++i) {
         float3 sigma_point = source_mean;
         if (i > 0u) {
@@ -126,8 +126,18 @@ bool project_gut_splat(
         if (!valid_gut_selection_point(projected, cam))
             return false;
 
+        image_points[i] = projected.xy;
+    }
+
+    unwrap_image_points_x(image_points, cam);
+
+    float2 mean2d = float2(0.0);
+    for (uint i = 0u; i < NUM_SIGMA_POINTS; ++i) {
         float weight = i == 0u ? weight_mean_0 : weight_sigma;
-        mean2d += weight * projected.xy;
+        mean2d += weight * image_points[i];
+    }
+    if (is_equirectangular_camera(cam)) {
+        mean2d.x = wrap_image_x(mean2d.x, cam);
     }
 
     position = mean2d - 0.5f;
@@ -159,6 +169,9 @@ bool project_splat(uint splat_idx, SelectionUniforms uniforms, out float2 positi
     if (projected.z <= NEAR_CLIP)
         return false;
 
+    if (is_equirectangular_camera(cam)) {
+        projected.x = wrap_image_x(projected.x, cam);
+    }
     position = projected.xy - 0.5;
     return true;
 }

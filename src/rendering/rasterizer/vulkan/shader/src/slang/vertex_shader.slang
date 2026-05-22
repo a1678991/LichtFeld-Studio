@@ -191,20 +191,29 @@ Splat_2D_Vertex project_gaussian_to_camera_gut(
     }
 
     float2 image_points[NUM_SIGMA_POINTS];
-    float2 mean2d = float2(0.0);
     for (uint i = 0u; i < NUM_SIGMA_POINTS; ++i) {
         float3 projected = project_point(sigma_points[i], cam);
         if (!valid_gut_image_point(projected, cam)) {
             return { float3(0.0), float3(0.0), float3(0.0), float4(0.0), 0.0 };
         }
         image_points[i] = projected.xy;
+    }
+
+    unwrap_image_points_x(image_points, cam);
+
+    float2 mean2d = float2(0.0);
+    for (uint i = 0u; i < NUM_SIGMA_POINTS; ++i) {
         float weight = i == 0u ? weight_mean_0 : weight_sigma;
         mean2d += weight * image_points[i];
+    }
+    float2 covariance_mean2d = mean2d;
+    if (is_equirectangular_camera(cam)) {
+        mean2d.x = wrap_image_x(mean2d.x, cam);
     }
 
     float3 cov2d = float3(0.0);
     for (uint i = 0u; i < NUM_SIGMA_POINTS; ++i) {
-        float2 d = image_points[i] - mean2d;
+        float2 d = image_points[i] - covariance_mean2d;
         float weight = i == 0u ? weight_cov_0 : weight_sigma;
         cov2d += weight * float3(d.x * d.x, d.x * d.y, d.y * d.y);
     }
@@ -243,6 +252,45 @@ rectangle get_rectangle_tile_space(
     rect_tile_space.min_y = uint16_t(floor(clamp((ndc_xy.y - radii.y) / TILE_HEIGHT, 0, grid_height)));
     rect_tile_space.max_x = uint16_t(ceil(clamp((ndc_xy.x + radii.x) / TILE_WIDTH, 0, grid_width)));
     rect_tile_space.max_y = uint16_t(ceil(clamp((ndc_xy.y + radii.y) / TILE_HEIGHT, 0, grid_height)));
+
+    return rect_tile_space;
+}
+
+rectangle get_wrapped_rectangle_tile_space(
+    float2 ndc_xy,
+    float2 radii,
+    uint grid_height,
+    uint grid_width) {
+
+    rectangle rect_tile_space;
+
+    rect_tile_space.min_x = 0;
+    rect_tile_space.min_y = uint16_t(floor(clamp((ndc_xy.y - radii.y) / TILE_HEIGHT, 0, grid_height)));
+    rect_tile_space.max_x = 0;
+    rect_tile_space.max_y = uint16_t(ceil(clamp((ndc_xy.y + radii.y) / TILE_HEIGHT, 0, grid_height)));
+
+    if (grid_width == 0u || rect_tile_space.min_y >= rect_tile_space.max_y)
+        return rect_tile_space;
+
+    int tile_width_i = int(grid_width);
+    int x0 = int(floor((ndc_xy.x - radii.x) / TILE_WIDTH));
+    int x1 = int(ceil((ndc_xy.x + radii.x) / TILE_WIDTH));
+    int span_x = x1 - x0;
+    if (span_x <= 0)
+        return rect_tile_space;
+
+    if (span_x >= tile_width_i) {
+        rect_tile_space.min_x = 0;
+        rect_tile_space.max_x = uint16_t(grid_width);
+        return rect_tile_space;
+    }
+
+    int start = x0 % tile_width_i;
+    if (start < 0)
+        start += tile_width_i;
+
+    rect_tile_space.min_x = uint16_t(start);
+    rect_tile_space.max_x = uint16_t(start + span_x);
 
     return rect_tile_space;
 }
@@ -550,6 +598,7 @@ void main(
     Splat_2D_Vertex splat_dist = splat;
 
     float radius = splat_radius(splat_dist.cov_vs.xyz, splat_dist.det);
+    bool equirectangular_camera = is_equirectangular_camera(cam);
 
   #if TILE_CULLING_MODE == 0
     float2 radii = float2(radius);
@@ -557,9 +606,14 @@ void main(
     float extend = no_diff extend_from_opacity(gauss.opacities);
     float2 radii = sqrt(splat_dist.cov_vs.xz) * extend;
   #endif
+    if (equirectangular_camera) {
+        radii.x = min(radii.x, float(image_width));
+        radii.y = min(radii.y, 0.49f * float(image_height));
+    }
 
-    rectangle rect_tile_space = get_rectangle_tile_space(
-        splat_dist.xyz_vs.xy, radii, grid_height, grid_width);
+    rectangle rect_tile_space = equirectangular_camera
+        ? get_wrapped_rectangle_tile_space(splat_dist.xyz_vs.xy, radii, grid_height, grid_width)
+        : get_rectangle_tile_space(splat_dist.xyz_vs.xy, radii, grid_height, grid_width);
 
     int32_t n_tiles = int32_t(rect_tile_space.max_x - rect_tile_space.min_x) * int32_t(rect_tile_space.max_y - rect_tile_space.min_y);
     if (n_tiles == 0) {
@@ -578,10 +632,12 @@ void main(
     }
 
   #if TILE_CULLING_MODE == 2
-    n_tiles = no_diff count_ellipse_grid_overlaps(
-        splat_dist.xyz_vs.xy, splat_dist.inv_cov_vs_opac.xyz/(extend*extend),
-        rect_tile_space
-    );
+    if (!equirectangular_camera) {
+        n_tiles = no_diff count_ellipse_grid_overlaps(
+            splat_dist.xyz_vs.xy, splat_dist.inv_cov_vs_opac.xyz/(extend*extend),
+            rect_tile_space
+        );
+    }
   #endif
 
     // out_radii[g_idx] = (uint32_t)radius;  // inria

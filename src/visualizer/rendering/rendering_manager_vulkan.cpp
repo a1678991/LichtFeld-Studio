@@ -828,8 +828,7 @@ namespace lfs::vis {
             const bool vksplat_panel_supported =
                 vksplat_output_slot.has_value() &&
                 context.vulkan_context != nullptr &&
-                lfs::rendering::isVkSplatBackend(request.raster_backend) &&
-                !request.equirectangular;
+                lfs::rendering::isVkSplatBackend(request.raster_backend);
             if (vksplat_panel_supported) {
                 if (!vksplat_viewport_renderer_) {
                     vksplat_viewport_renderer_ = std::make_unique<VksplatViewportRenderer>();
@@ -862,9 +861,6 @@ namespace lfs::vis {
 
             if (!context.vulkan_context) {
                 return std::unexpected("VkSplat split-view panel requires an active Vulkan context");
-            }
-            if (request.equirectangular) {
-                return std::unexpected("VkSplat split-view panel supports pinhole cameras, not equirectangular cameras");
             }
             return std::unexpected("VkSplat split-view panel did not receive an output slot");
         };

@@ -12,11 +12,32 @@ def _read(rel_path: str) -> str:
     return (PROJECT_ROOT / rel_path).read_text(encoding="utf-8")
 
 
-def test_vksplat_viewer_rejects_equirectangular_until_native_support_exists():
+def test_vksplat_viewer_supports_equirectangular_through_gut():
     source = _read("src/visualizer/rendering/vksplat_viewport_renderer.cpp")
 
-    assert "VkSplat forward path supports pinhole cameras, not equirectangular cameras" in source
-    assert "VkSplat selection query supports pinhole cameras, not equirectangular cameras" in source
+    assert "VkSplat forward path supports pinhole cameras, not equirectangular cameras" not in source
+    assert "VkSplat selection query supports pinhole cameras, not equirectangular cameras" not in source
+    assert "kVkSplatCameraModelEquirectangular = 3u" in source
+    assert "request.equirectangular && !request.gut" in source
+    assert "VkSplat equirectangular rendering requires the 3DGUT backend" in source
+    assert "VkSplat equirectangular selection requires the 3DGUT backend" in source
+
+
+def test_vksplat_equirectangular_shaders_project_rays_and_wrap_tiles():
+    utils = _read("src/rendering/rasterizer/vulkan/shader/src/slang/utils.slang")
+    vertex = _read("src/rendering/rasterizer/vulkan/shader/src/slang/vertex_shader.slang")
+    tile = _read("src/rendering/rasterizer/vulkan/shader/src/slang/tile_shader.slang")
+    selection = _read("src/rendering/rasterizer/vulkan/shader/src/slang/selection_mask.slang")
+
+    assert "EQUIRECTANGULAR = 3" in utils
+    assert "project_point_equirect" in utils
+    assert "float azimuth = 2.0f * M_PI * (pixel.x / float(cam.W) - 0.5f);" in utils
+    assert "unwrap_image_points_x(image_points, cam)" in vertex
+    assert "covariance_mean2d" in vertex
+    assert "get_wrapped_rectangle_tile_space" in vertex
+    assert "base_camera_model(uniforms.camera_model) == uint(CameraModel::EQUIRECTANGULAR)" in tile
+    assert "% grid_width" in tile
+    assert "unwrap_image_points_x(image_points, cam)" in selection
 
 
 def test_viewer_equirectangular_software_projection_uses_rasterizer_mapping():

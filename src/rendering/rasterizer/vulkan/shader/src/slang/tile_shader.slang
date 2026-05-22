@@ -55,6 +55,7 @@ void main(
     const uint image_width = uniforms.image_width;
     const uint grid_height = uniforms.grid_height;
     const uint grid_width = uniforms.grid_width;
+    const bool wrap_x = base_camera_model(uniforms.camera_model) == uint(CameraModel::EQUIRECTANGULAR);
 
     int32_t globalIdx = dispatchThreadID.x;
     
@@ -98,7 +99,8 @@ void main(
         for (uint16_t x = rect.min_x; x < rect.max_x; x++) {
             if (offset >= offset_max)
                 return;
-            uint32_t key = uint32_t(y) * grid_width + uint32_t(x);
+            uint32_t key_x = wrap_x ? uint32_t(x) % grid_width : uint32_t(x);
+            uint32_t key = uint32_t(y) * grid_width + key_x;
             out_unsorted_keys[offset] = sortingKey_t((key << DEPTH_BITS) | z);
             out_unsorted_gauss_idx[offset] = globalIdx;
             offset++;
@@ -108,6 +110,18 @@ void main(
 #endif  // TILE_CULLING_MODE == 0 || TILE_CULLING_MODE == 1
 
 #if TILE_CULLING_MODE == 2
+
+    if (wrap_x) {
+        for (uint16_t y = rect.min_y; y < rect.max_y; y++) {
+            for (uint16_t x = rect.min_x; x < rect.max_x && offset < offset_max; x++) {
+                uint32_t key = uint32_t(y) * grid_width + (uint32_t(x) % grid_width);
+                out_unsorted_keys[offset] = sortingKey_t((key << DEPTH_BITS) | z);
+                out_unsorted_gauss_idx[offset] = globalIdx;
+                offset++;
+            }
+        }
+        return;
+    }
 
     if (rect.max_y-rect.min_y <= rect.max_x-rect.min_x) {
         for (uint16_t y = rect.min_y; y < rect.max_y; y++) {

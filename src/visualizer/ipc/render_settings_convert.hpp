@@ -136,6 +136,7 @@ namespace lfs::vis {
                                : lfs::rendering::normalizeViewerRasterBackend(requested_backend, p.gut);
         s.gut = lfs::rendering::isGutBackend(s.raster_backend);
         s.equirectangular = p.equirectangular;
+        enforceProjectionBackend(s);
         s.orthographic = p.orthographic;
         s.ortho_scale = p.ortho_scale;
         s.selection_color_committed = detail::to_vec3(p.selection_color_committed);

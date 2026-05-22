@@ -27,6 +27,7 @@ enum CameraModel {
     PINHOLE = 0,
     ORTHO = 1,
     FISHEYE = 2,
+    EQUIRECTANGULAR = 3,
     OPENCV = 5,
 };
 
@@ -171,6 +172,23 @@ float3 project_point_ortho(float3 point, Camera cam) {
         cam.fx * view_point.x + cam.cx,
         cam.fy * view_point.y + cam.cy,
         view_point.z
+    };
+}
+
+[Differentiable]
+float3 project_point_equirect(float3 point, Camera cam) {
+    float3 view_point = geom_transform_points(point, cam.world_view_transform);
+    float len = length(view_point);
+    if (len <= eps || !isfinite(len))
+        return {0, 0, -1};
+
+    float3 dir = view_point / len;
+    float azimuth = atan2(dir.x, dir.z);
+    float elevation = asin(clamp(dir.y, -1.0f, 1.0f));
+    return {
+        (azimuth / (2.0f * M_PI) + 0.5f) * float(cam.W),
+        (elevation / M_PI + 0.5f) * float(cam.H),
+        len
     };
 }
 
@@ -411,6 +429,8 @@ float3x3 compute_jacobian_fisheye(float3 xyz_ws, Camera cam) {
 float3 project_point(float3 point, Camera cam) {
     if (cam.model == int(CameraModel::FISHEYE))
         return project_point_fisheye(point, cam);
+    else if (cam.model == int(CameraModel::EQUIRECTANGULAR))
+        return project_point_equirect(point, cam);
     else if (cam.model == int(CameraModel::OPENCV))
         return project_point_opencv(point, cam);
     else if (cam.model == int(CameraModel::ORTHO))
@@ -441,6 +461,40 @@ bool image_point_in_image_bounds_margin(float2 image_point, Camera cam, float ma
 }
 
 [ForceInline]
+bool is_equirectangular_camera(Camera cam) {
+    return cam.model == int(CameraModel::EQUIRECTANGULAR);
+}
+
+[ForceInline]
+float camera_wrap_period_x(Camera cam) {
+    return is_equirectangular_camera(cam) ? float(cam.W) : 0.0f;
+}
+
+[ForceInline]
+float wrap_image_x(float x, Camera cam) {
+    float period = camera_wrap_period_x(cam);
+    if (period <= 0.0f)
+        return x;
+    float wrapped = x - period * floor(x / period);
+    return wrapped >= period ? wrapped - period : wrapped;
+}
+
+[ForceInline]
+void unwrap_image_points_x(inout float2 image_points[7], Camera cam) {
+    float period = camera_wrap_period_x(cam);
+    if (period <= 0.0f)
+        return;
+
+    float inv_period = 1.0f / period;
+    float ref_x = image_points[0].x;
+    for (uint i = 0u; i < 7u; ++i) {
+        float dx = image_points[i].x - ref_x;
+        dx -= period * round(dx * inv_period);
+        image_points[i].x = ref_x + dx;
+    }
+}
+
+[ForceInline]
 float3 safe_normalize(float3 v) {
     float l2 = dot(v, v);
     return l2 > 0.0f ? v * rsqrt(l2) : v;
@@ -465,6 +519,17 @@ WorldRay pixel_to_world_ray(float2 pixel, Camera cam) {
     float4x3 world_view_t = transpose(cam.world_view_transform);
     float3x3 view_to_world_rotation = float3x3(world_view_t);
     float3 camera_origin = -mul(view_to_world_rotation, world_view_t[3]);
+    if (cam.model == int(CameraModel::EQUIRECTANGULAR)) {
+        float azimuth = 2.0f * M_PI * (pixel.x / float(cam.W) - 0.5f);
+        float elevation = M_PI * (pixel.y / float(cam.H) - 0.5f);
+        float cos_elevation = cos(elevation);
+        float3 ray_camera = safe_normalize(float3(
+            sin(azimuth) * cos_elevation,
+            sin(elevation),
+            cos(azimuth) * cos_elevation));
+        float3 direction = safe_normalize(mul(view_to_world_rotation, ray_camera));
+        return { camera_origin, direction, isfinite(dot(camera_origin, camera_origin)) && isfinite(dot(direction, direction)) };
+    }
     float3 ray_camera = cam.model == int(CameraModel::ORTHO)
                             ? float3(0.0f, 0.0f, 1.0f)
                             : safe_normalize(float3(uv, 1.0f));
