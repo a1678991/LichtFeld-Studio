@@ -4,6 +4,7 @@
 </head>
 <body id="overlay-body">
     <div id="primary-toolbar-root" class="panel-toolbar-root">
+        <div class="shelf-background"></div>
         <div id="primary-utility-toolbar" class="toolbar-container toolbar-vertical">
             <div class="icon-btn"
                  data-for="button : camera_mode_buttons"
@@ -59,9 +60,6 @@
                  data-event-click="toolbar_action(button.action, button.value)">
                 <img data-attr-src="button.icon_src" />
             </div>
-        </div>
-
-        <div id="primary-utility-bottom-toolbar" class="toolbar-container toolbar-vertical toolbar-bottom">
             <div class="icon-btn"
                  data-for="button : utility_bottom_buttons"
                  data-attr-id="button.button_id"
@@ -124,6 +122,7 @@
     </div>
 
     <div id="secondary-toolbar-root" class="panel-toolbar-root hidden">
+        <div class="shelf-background"></div>
         <div id="secondary-utility-toolbar" class="toolbar-container toolbar-vertical">
             <div class="icon-btn"
                  data-for="button : camera_mode_buttons"
@@ -174,9 +173,6 @@
                  data-event-click="toolbar_action(button.action, button.value)">
                 <img data-attr-src="button.icon_src" />
             </div>
-        </div>
-
-        <div id="secondary-utility-bottom-toolbar" class="toolbar-container toolbar-vertical toolbar-bottom">
             <div class="icon-btn"
                  data-for="button : utility_bottom_buttons"
                  data-class-selected="button.selected"

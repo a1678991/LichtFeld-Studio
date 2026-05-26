@@ -33,17 +33,34 @@ body {
     gap: 0;
 }
 
+.shelf-background {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 40dp;
+    pointer-events: none;
+}
+
 .toolbar-vertical {
     position: absolute;
-    left: 10dp;
-    top: 5dp;
+    left: 0;
+    top: 0;
+    width: 40dp;
+    padding-top: 14dp;
     flex-direction: column;
+    align-items: center;
     pointer-events: auto;
 }
 
-.toolbar-bottom {
-    top: auto;
-    bottom: 5dp;
+.toolbar-vertical .icon-btn {
+    padding: 6dp;
+    border-radius: 6dp;
+}
+
+.toolbar-vertical .icon-btn.selected {
+    padding: 5dp;
+    border-width: 1dp;
 }
 
 .toolbar-hcenter {

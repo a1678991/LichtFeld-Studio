@@ -5,6 +5,15 @@
     border-radius: @{num(size.window_rounding)}dp;
 }
 
+.shelf-background {
+    background-color: @{menu.background};
+}
+
+.toolbar-vertical {
+    background-color: transparent;
+    border-radius: 0;
+}
+
 .subtoolbar-container {
     background-color: @{toolbar.sub_background};
     border-radius: @{num(size.window_rounding)}dp;
@@ -24,6 +33,10 @@
 
 .icon-btn.selected {
     background-color: @{primary};
+}
+
+.toolbar-vertical .icon-btn.selected {
+    border-color: @{alpha(text,0.25)};
 }
 
 .icon-btn.selected:hover {
