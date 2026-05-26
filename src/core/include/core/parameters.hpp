@@ -247,9 +247,9 @@ namespace lfs::core {
         };
 
         struct LFS_CORE_API ServerConfig {
-            int tcp_server_connection_port = -1;              // Set the TCP connection port when tcp connection is in use for server requests, -1 for auto
-            int tcp_broadcast_connection_port = -1;           // Set the TCP connection port when tcp connection is in use for broadcasting, -1 for auto
-            bool tcp_connection = false;                      // Use TCP connection for signals and events
+            int tcp_server_connection_port = -1;    // Set the TCP connection port when tcp connection is in use for server requests, -1 for auto
+            int tcp_broadcast_connection_port = -1; // Set the TCP connection port when tcp connection is in use for broadcasting, -1 for auto
+            bool tcp_connection = false;            // Use TCP connection for signals and events
 
             nlohmann::json to_json() const;
             static ServerConfig from_json(const nlohmann::json& j);

@@ -26,4 +26,4 @@ namespace lfs::tcp {
         std::thread response_thread_;
         std::atomic<bool> running_;
     };
-}
+} // namespace lfs::tcp

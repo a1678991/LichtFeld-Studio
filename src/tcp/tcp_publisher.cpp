@@ -46,28 +46,25 @@ namespace lfs::core::events::state {
 
     // CUDA version check
     ENABLE_TO_JSON(CudaVersionUnsupported, major, minor, min_major, min_minor);
-}
+} // namespace lfs::core::events::state
 #undef ENABLE_TO_JSON
 
 // Create a subscription to an event that sends a broadcast with its corresponding to unsubscribe function
-#define SUBSCRIBE_EVENT(Type)                                                                       \
-    subscriptions_.emplace_back([id = lfs::core::events::state::Type::when([this](const auto& e) {  \
-        std::lock_guard lock(send_mutex_);                                                          \
-        if (stopped_) return;                                                                       \
-        send(makeEventMessage(e, #Type));                                                           \
-    })]() {                                                                                         \
-        ::lfs::event::EventBridge::instance().unsubscribe(                                          \
-            typeid(lfs::core::events::state::Type), id);                                            \
+#define SUBSCRIBE_EVENT(Type)                                                                      \
+    subscriptions_.emplace_back([id = lfs::core::events::state::Type::when([this](const auto& e) { \
+                                     std::lock_guard lock(send_mutex_);                            \
+                                     if (stopped_)                                                 \
+                                         return;                                                   \
+                                     send(makeEventMessage(e, #Type));                             \
+                                 })]() {                                                           \
+        ::lfs::event::EventBridge::instance().unsubscribe(                                         \
+            typeid(lfs::core::events::state::Type), id);                                           \
     })
 
 namespace lfs::tcp {
 
     PublisherServer::PublisherServer(int port, std::shared_ptr<lfs::vis::TrainerManager> trainer_manager, core::LogLevel level, bool warm_up)
-        : TCPServer(port, std::move(trainer_manager), zmq::socket_type::pub)
-        , stopped_(false)
-        , level_(level)
-        , log_handler_token_(std::nullopt)
-    {
+        : TCPServer(port, std::move(trainer_manager), zmq::socket_type::pub), stopped_(false), level_(level), log_handler_token_(std::nullopt) {
         // Wait for subs to connect
         if (warm_up) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -96,11 +93,9 @@ namespace lfs::tcp {
                 }
                 nlohmann::json data{
                     {"message", msg},
-                    {"level", core::Logger::to_string(in_level)}
-                };
+                    {"level", core::Logger::to_string(in_level)}};
                 send(makeEventMessage(data, "log"));
-            }
-        );
+            });
 
         SUBSCRIBE_EVENT(TrainingStarted);
         SUBSCRIBE_EVENT(TrainingProgress);
@@ -149,11 +144,10 @@ namespace lfs::tcp {
 
     nlohmann::json PublisherServer::makeEventMessage(const nlohmann::json& data, const std::string& event_type) {
         return {
-                {"command", "event"},
-                {"event_type", event_type},
-                {"data", data}
-        };
+            {"command", "event"},
+            {"event_type", event_type},
+            {"data", data}};
     }
-}
+} // namespace lfs::tcp
 
 #undef SUBSCRIBE_EVENT

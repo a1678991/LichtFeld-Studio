@@ -7,9 +7,7 @@
 namespace lfs::tcp {
 
     ResponderServer::ResponderServer(int port, std::shared_ptr<lfs::vis::TrainerManager> trainer_manager_)
-        : TCPServer(port, std::move(trainer_manager_), zmq::socket_type::rep)
-        , running_(false)
-    {
+        : TCPServer(port, std::move(trainer_manager_), zmq::socket_type::rep), running_(false) {
         // Wake up every 200ms so recv doesn't hold the program
         socket_.set(zmq::sockopt::rcvtimeo, 200);
     }
@@ -45,7 +43,9 @@ namespace lfs::tcp {
             } catch (const std::exception& e) {
                 // Malformed / unreadable message
                 nlohmann::json error_response{{"success", false}, {"error", e.what()}};
-                try { send(error_response); } catch (...) {}
+                try {
+                    send(error_response);
+                } catch (...) {}
                 continue;
             }
 
@@ -73,27 +73,21 @@ namespace lfs::tcp {
             response["parameter"] = parameter;
             response["value"] = getValue(parameter, success);
             response["success"] = success;
-        }
-        else if (command == "start") {
+        } else if (command == "start") {
             response["success"] = trainer_manager_->startTraining();
-        }
-        else if (command == "pause") {
+        } else if (command == "pause") {
             trainer_manager_->pauseTraining();
             response["success"] = trainer_manager_->isPaused();
-        }
-        else if (command == "resume") {
+        } else if (command == "resume") {
             trainer_manager_->resumeTraining();
             response["success"] = !trainer_manager_->isPaused();
-        }
-        else if (command == "stop") {
+        } else if (command == "stop") {
             trainer_manager_->stopTraining();
             response["success"] = true;
-        }
-        else if (command == "save_checkpoint") {
+        } else if (command == "save_checkpoint") {
             trainer_manager_->requestSaveCheckpoint();
             response["success"] = true;
-        }
-        else {
+        } else {
             response["success"] = false;
         }
         return response;
@@ -164,4 +158,4 @@ namespace lfs::tcp {
         success = false;
         return "";
     }
-}
+} // namespace lfs::tcp

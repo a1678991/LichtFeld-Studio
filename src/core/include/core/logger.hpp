@@ -7,13 +7,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <source_location>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <cstdint>
 
 namespace lfs::core {
 

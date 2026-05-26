@@ -5,9 +5,9 @@
 #pragma once
 
 #include <memory>
-#include <zmq.hpp>
-#include <visualizer/training/training_manager.hpp>
 #include <nlohmann/json.hpp>
+#include <visualizer/training/training_manager.hpp>
+#include <zmq.hpp>
 
 namespace lfs::tcp {
     class TCPServer {
@@ -35,4 +35,4 @@ namespace lfs::tcp {
         zmq::context_t context_;
         zmq::socket_t socket_;
     };
-}
+} // namespace lfs::tcp

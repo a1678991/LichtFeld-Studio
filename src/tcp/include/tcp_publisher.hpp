@@ -5,12 +5,12 @@
 #pragma once
 
 #include "tcp_server.hpp"
-#include <mutex>
 #include <atomic>
-#include <vector>
-#include <optional>
-#include <functional>
 #include <core/logger.hpp>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <vector>
 
 namespace lfs::tcp {
     class PublisherServer : public TCPServer {
@@ -25,10 +25,10 @@ namespace lfs::tcp {
         static nlohmann::json makeEventMessage(const nlohmann::json& data, const std::string& event_type);
 
     private:
-        std::mutex send_mutex_; // Avoids multiple calls to send by different event threads
+        std::mutex send_mutex_;     // Avoids multiple calls to send by different event threads
         std::atomic<bool> stopped_; // Avoids calls to send when the stop is taking place
         std::vector<std::function<void()>> subscriptions_;
         core::LogLevel level_;
         std::optional<core::LogHandlerToken> log_handler_token_;
     };
-}
+} // namespace lfs::tcp
