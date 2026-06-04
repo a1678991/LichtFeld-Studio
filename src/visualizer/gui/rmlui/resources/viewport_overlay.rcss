@@ -27,12 +27,6 @@ body {
     gap: 0;
 }
 
-.subtoolbar-container {
-    display: flex;
-    padding: 0;
-    gap: 0;
-}
-
 .shelf-background {
     position: absolute;
     left: 0;
@@ -83,14 +77,6 @@ body {
     top: 5dp;
 }
 
-.toolbar-layer-submode {
-    top: 49dp;
-}
-
-.toolbar-layer-pivot {
-    top: 83dp;
-}
-
 .viewport-selection-overlay {
     position: absolute;
     top: 49dp;
@@ -115,7 +101,7 @@ body {
 
 .viewport-transform-overlay {
     position: absolute;
-    top: 127dp;
+    top: 49dp;
     left: 52dp;
     right: 12dp;
     display: flex;
@@ -286,6 +272,44 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.viewport-transform-context {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+    flex-shrink: 0;
+}
+
+.viewport-transform-option-group {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0;
+    border-width: 1dp;
+    border-radius: 5dp;
+}
+
+.viewport-transform-option-group.hidden {
+    display: none;
+}
+
+.viewport-transform-option {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24dp;
+    height: 24dp;
+    min-width: 24dp;
+    min-height: 24dp;
+    padding: 3dp;
+    border-radius: 4dp;
+    box-sizing: border-box;
+}
+
+.viewport-transform-option img {
+    width: 18dp;
+    height: 18dp;
 }
 
 .viewport-transform-fields {

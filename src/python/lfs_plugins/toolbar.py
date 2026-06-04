@@ -62,25 +62,20 @@ def _tool_selected(tool_def, active_tool_id, context):
     return active_tool_id == tool_def.id
 
 
-def _tooltip_text(label, shortcut=""):
-    if label and shortcut:
-        return f"{label} ({shortcut})"
-    return label or ""
-
-
-def _localized_tooltip(tooltip_key, fallback=""):
-    if not tooltip_key:
+def _ui_label(key, fallback=""):
+    if not key:
         return fallback or ""
     try:
         import lichtfeld as lf
 
-        tr = getattr(getattr(lf, "ui", None), "tr", None)
-        if callable(tr):
-            text = tr(tooltip_key)
-            if text and text != tooltip_key:
-                return text
+        tr = getattr(lf.ui, "tr", None)
+        if not callable(tr):
+            return fallback or ""
+        value = tr(key)
     except Exception:
-        pass
+        return fallback or ""
+    if value and value != key:
+        return value
     return fallback or ""
 
 
@@ -118,8 +113,7 @@ def _button_record(button_id, action, value, icon_src, *,
         "action": action,
         "value": value,
         "icon_src": icon_src,
-        "tooltip_key": tooltip_key,
-        "tooltip_text": _localized_tooltip(tooltip_key, tooltip_text),
+        "tooltip_text": _ui_label(tooltip_key, tooltip_text),
         "action_id": action_id,
         "shortcut_text": _keymap_shortcut(action_id, shortcut_text),
         "selected": selected,
@@ -205,8 +199,8 @@ class _GizmoToolbarController:
                 "show_selection_toolbar": False,
                 "show_transform_toolbar": False,
                 "show_mirror_toolbar": False,
-                "show_submode_toolbar": False,
-                "show_pivot_toolbar": False,
+                "show_transform_space_controls": False,
+                "show_transform_pivot_controls": False,
                 "selection_group_buttons": [],
                 "selection_mode_buttons": [],
                 "transform_group_buttons": [],
@@ -268,8 +262,8 @@ class _GizmoToolbarController:
                 bool(transform_tool_buttons)
             ),
             "show_mirror_toolbar": active_tool_id == self._MIRROR_TOOL_ID and bool(submode_buttons),
-            "show_submode_toolbar": active_tool_id != self._MIRROR_TOOL_ID and bool(submode_buttons),
-            "show_pivot_toolbar": bool(pivot_buttons),
+            "show_transform_space_controls": active_tool_id in self._TRANSFORM_TOOL_IDS and bool(submode_buttons),
+            "show_transform_pivot_controls": active_tool_id in self._TRANSFORM_TOOL_IDS and bool(pivot_buttons),
             "selection_group_buttons": selection_group_buttons,
             "selection_mode_buttons": selection_mode_buttons,
             "transform_group_buttons": transform_group_buttons,
@@ -288,7 +282,7 @@ class _GizmoToolbarController:
             tool_def.id,
             _tool_icon_src(tool_def),
             tooltip_key=tooltip_key,
-            tooltip_text=_tooltip_text(tool_def.label, tool_def.shortcut),
+            tooltip_text=tool_def.label,
             action_id=self._TOOL_ACTIONS.get(tool_def.id, ""),
             shortcut_text=tool_def.shortcut,
             selected=_tool_selected(tool_def, active_tool_id, context),
@@ -324,7 +318,7 @@ class _GizmoToolbarController:
                     mode.id,
                     _icon_src(mode.icon) if mode.icon else "",
                     tooltip_key=tooltip_key,
-                    tooltip_text=_tooltip_text(mode.label, mode.shortcut),
+                    tooltip_text=mode.label,
                     action_id=self._SELECTION_MODE_ACTIONS.get(mode.id, ""),
                     shortcut_text=mode.shortcut,
                     selected=selected,
@@ -338,7 +332,7 @@ class _GizmoToolbarController:
             "builtin.select",
             _tool_icon_src(tool_def),
             tooltip_key=self._TOOL_LOCALE_KEYS.get(tool_def.id, ""),
-            tooltip_text=_tooltip_text(tool_def.label, getattr(tool_def, "shortcut", "")),
+            tooltip_text=tool_def.label,
             action_id="TOOL_SELECT",
             shortcut_text=getattr(tool_def, "shortcut", ""),
             selected=active_tool_id == "builtin.select",
@@ -356,14 +350,15 @@ class _GizmoToolbarController:
         ]
         active_button = next((b for b in tool_buttons if b["selected"]), None)
         fallback = next((b for b in tool_buttons if b["enabled"]), tool_buttons[0])
+        display_button = active_button or fallback
         group_button = _button_record(
             "group-transform",
             "tool",
-            active_button["value"] if active_button else fallback["value"],
-            active_button["icon_src"] if active_button else fallback["icon_src"],
+            display_button["value"],
+            display_button["icon_src"],
             tooltip_text="Transform Tools",
-            action_id=fallback["action_id"],
-            shortcut_text=fallback["shortcut_text"],
+            action_id=display_button["action_id"],
+            shortcut_text=display_button["shortcut_text"],
             selected=active_button is not None,
             enabled=any(b["enabled"] for b in tool_buttons),
         )
@@ -379,7 +374,7 @@ class _GizmoToolbarController:
                 self._MIRROR_TOOL_ID,
                 _tool_icon_src(tool_def),
                 tooltip_key=self._TOOL_LOCALE_KEYS.get(self._MIRROR_TOOL_ID, ""),
-                tooltip_text=_tooltip_text(tool_def.label, getattr(tool_def, "shortcut", "")),
+                tooltip_text=tool_def.label,
                 action_id=self._TOOL_ACTIONS.get(self._MIRROR_TOOL_ID, ""),
                 shortcut_text=getattr(tool_def, "shortcut", ""),
                 selected=active_tool_id == self._MIRROR_TOOL_ID,
@@ -425,7 +420,7 @@ class _GizmoToolbarController:
                     mode.id,
                     _icon_src(mode.icon) if mode.icon else "",
                     tooltip_key=tooltip_key,
-                    tooltip_text=_tooltip_text(mode.label, mode.shortcut),
+                    tooltip_text=mode.label,
                     shortcut_text=mode.shortcut,
                     selected=selected,
                 )
@@ -828,8 +823,8 @@ class _ViewportToolbarController:
         "show_selection_toolbar",
         "show_transform_toolbar",
         "show_mirror_toolbar",
-        "show_submode_toolbar",
-        "show_pivot_toolbar",
+        "show_transform_space_controls",
+        "show_transform_pivot_controls",
     )
     _RECORD_FIELDS = (
         "camera_mode_buttons",
@@ -868,8 +863,8 @@ class _ViewportToolbarController:
         self._show_selection_toolbar = False
         self._show_transform_toolbar = False
         self._show_mirror_toolbar = False
-        self._show_submode_toolbar = False
-        self._show_pivot_toolbar = False
+        self._show_transform_space_controls = False
+        self._show_transform_pivot_controls = False
         self._gizmo.reset()
         self._utility.reset()
         self._depth_view_controls.unmount()
@@ -964,8 +959,14 @@ class _ViewportToolbarController:
         dirty |= self._sync_flag("show_selection_toolbar", gizmo_state["show_selection_toolbar"] and not show_render_toolbar)
         dirty |= self._sync_flag("show_transform_toolbar", gizmo_state["show_transform_toolbar"] and not show_render_toolbar)
         dirty |= self._sync_flag("show_mirror_toolbar", gizmo_state["show_mirror_toolbar"] and not show_render_toolbar)
-        dirty |= self._sync_flag("show_submode_toolbar", gizmo_state["show_submode_toolbar"] and not show_render_toolbar)
-        dirty |= self._sync_flag("show_pivot_toolbar", gizmo_state["show_pivot_toolbar"] and not show_render_toolbar)
+        dirty |= self._sync_flag(
+            "show_transform_space_controls",
+            gizmo_state["show_transform_space_controls"] and not show_render_toolbar,
+        )
+        dirty |= self._sync_flag(
+            "show_transform_pivot_controls",
+            gizmo_state["show_transform_pivot_controls"] and not show_render_toolbar,
+        )
 
         dirty |= self._sync_records("camera_mode_buttons", utility_state["camera_mode_buttons"])
         dirty |= self._sync_records("utility_primary_buttons", utility_state["primary_buttons"])
@@ -1017,7 +1018,6 @@ class _ViewportToolbarController:
             "button_id",
             "action",
             "value",
-            "tooltip_key",
             "tooltip_text",
             "action_id",
             "enabled",

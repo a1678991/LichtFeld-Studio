@@ -137,10 +137,13 @@ def test_toolbar_binds_overlay_model_fields(toolbar_module):
     assert "selection_mode_buttons" in model.bound_record_lists
     assert "transform_group_buttons" in model.bound_record_lists
     assert "transform_tool_buttons" in model.bound_record_lists
-    assert "camera_group_buttons" in model.bound_record_lists
+    assert "mirror_group_buttons" in model.bound_record_lists
+    assert "utility_primary_buttons" in model.bound_record_lists
     assert "render_group_buttons" in model.bound_record_lists
     assert "camera_mode_buttons" in model.bound_record_lists
     assert "render_mode_buttons" in model.bound_record_lists
+    assert "show_transform_space_controls" in model.bound_funcs
+    assert "show_transform_pivot_controls" in model.bound_funcs
     assert "toolbar_action" in model.bound_events
     assert "selection_tool_label" in model.bound_funcs
     assert "selection_mode_label" in model.bound_funcs
@@ -158,8 +161,6 @@ def test_toolbar_binds_overlay_model_fields(toolbar_module):
     assert "transform_tool_label" in model.bound_funcs
     assert "transform_bake_label" in model.bound_funcs
     assert "transform_show_actions" in model.bound_funcs
-    assert "transform_submode_label" in model.bound_funcs
-    assert "transform_submode_tooltip_key" in model.bound_funcs
     assert "transform_pos_x_str" in model.bound_binds
     assert "transform_num_step" in model.bound_events
 
@@ -174,40 +175,34 @@ def test_toolbar_attach_handle_marks_model_dirty(toolbar_module):
     assert handle.dirty_all_calls == 1
 
 
-def test_utility_group_button_preserves_active_state(toolbar_module):
+def test_button_record_resolves_toolbar_tooltip(toolbar_module, monkeypatch):
     module, _hook_calls, _remove_calls = toolbar_module
+    lf_stub = sys.modules["lichtfeld"]
 
-    inactive = module._button_record(
-        "util-camera-orbit",
-        "set_camera_navigation_mode",
-        "orbit",
-        "../icon/camera-orbit.png",
-        tooltip_text="Orbit Camera",
-        selected=False,
+    monkeypatch.setattr(lf_stub.ui, "tr", lambda key: {"toolbar.home": "Home"}.get(key, key), raising=False)
+
+    localized = module._button_record(
+        "util-home",
+        "home",
+        "",
+        "../icon/home.png",
+        tooltip_key="toolbar.home",
+        tooltip_text="Fallback Home",
     )
-    active = module._button_record(
-        "util-camera-trackball",
-        "set_camera_navigation_mode",
-        "trackball",
-        "../icon/world.png",
-        tooltip_text="Free Orbit Camera",
-        selected=True,
+    fallback = module._button_record(
+        "util-custom",
+        "noop",
+        "",
+        "../icon/custom.png",
+        tooltip_key="toolbar.missing",
+        tooltip_text="Custom Tool",
     )
 
-    group_button = module._UtilityToolbarController._group_button(
-        "camera",
-        [inactive, active],
-        "Camera Mode",
-    )[0]
-
-    assert group_button["button_id"] == "group-camera"
-    assert group_button["action"] == "noop"
-    assert group_button["value"] == "camera"
-    assert group_button["icon_src"] == "../icon/world.png"
-    assert group_button["selected"] is True
+    assert localized["tooltip_text"] == "Home"
+    assert fallback["tooltip_text"] == "Custom Tool"
 
 
-def test_selection_tool_uses_flyout_modes(toolbar_module, monkeypatch):
+def test_selection_tool_uses_centered_modes(toolbar_module, monkeypatch):
     module, _hook_calls, _remove_calls = toolbar_module
     lf_stub = sys.modules["lichtfeld"]
     state = SimpleNamespace(active_tool="", active_submode="")
@@ -261,14 +256,16 @@ def test_selection_tool_uses_flyout_modes(toolbar_module, monkeypatch):
     controller = module._GizmoToolbarController()
     snapshot = controller.snapshot()
 
-    assert snapshot["show_selection_controls"] is True
-    assert snapshot["show_gizmo_toolbar"] is False
-    assert snapshot["show_submode_toolbar"] is False
+    assert snapshot["show_selection_toolbar"] is False
+    assert snapshot["show_transform_toolbar"] is False
+    assert snapshot["show_mirror_toolbar"] is False
+    assert snapshot["show_transform_space_controls"] is False
+    assert snapshot["show_transform_pivot_controls"] is False
     assert snapshot["selection_group_buttons"][0]["button_id"] == "group-selection"
     assert snapshot["selection_group_buttons"][0]["action"] == "tool"
     assert snapshot["selection_group_buttons"][0]["value"] == "builtin.select"
     assert snapshot["selection_group_buttons"][0]["icon_src"] == "../icon/selection.png"
-    assert snapshot["selection_group_buttons"][0]["tooltip_text"] == ""
+    assert snapshot["selection_group_buttons"][0]["tooltip_text"] == "Select"
     assert snapshot["selection_group_buttons"][0]["shortcut_text"] == "Alt+8"
     assert snapshot["selection_mode_buttons"][0]["shortcut_text"] == "Ctrl+9"
     assert snapshot["selection_mode_buttons"][1]["shortcut_text"] == ""
@@ -283,8 +280,9 @@ def test_selection_tool_uses_flyout_modes(toolbar_module, monkeypatch):
     snapshot = controller.snapshot()
     assert state.active_tool == "builtin.select"
     assert state.active_submode == "lasso"
+    assert snapshot["show_selection_toolbar"] is True
     assert snapshot["selection_group_buttons"][0]["selected"] is True
-    assert snapshot["selection_group_buttons"][0]["icon_src"] == "../icon/lasso.png"
+    assert snapshot["selection_group_buttons"][0]["icon_src"] == "../icon/selection.png"
     assert next(button for button in snapshot["selection_mode_buttons"] if button["value"] == "lasso")["selected"] is True
 
     controller.dispatch("tool", "builtin.select")
@@ -294,7 +292,7 @@ def test_selection_tool_uses_flyout_modes(toolbar_module, monkeypatch):
     assert snapshot["selection_group_buttons"][0]["selected"] is False
 
 
-def test_transform_tools_use_flyout_group(toolbar_module, monkeypatch):
+def test_transform_and_mirror_tools_use_centered_subtool_rows(toolbar_module, monkeypatch):
     module, _hook_calls, _remove_calls = toolbar_module
     lf_stub = sys.modules["lichtfeld"]
     state = SimpleNamespace(active_tool="", transform_space=1, pivot_mode=0, mirror_calls=[])
@@ -376,7 +374,10 @@ def test_transform_tools_use_flyout_group(toolbar_module, monkeypatch):
     controller = module._GizmoToolbarController()
     snapshot = controller.snapshot()
 
-    assert snapshot["show_transform_controls"] is True
+    assert snapshot["show_transform_toolbar"] is False
+    assert snapshot["show_mirror_toolbar"] is False
+    assert snapshot["show_transform_space_controls"] is False
+    assert snapshot["show_transform_pivot_controls"] is False
     assert snapshot["transform_group_buttons"][0]["button_id"] == "group-transform"
     assert snapshot["transform_group_buttons"][0]["action"] == "tool"
     assert snapshot["transform_group_buttons"][0]["value"] == "builtin.translate"
@@ -385,8 +386,8 @@ def test_transform_tools_use_flyout_group(toolbar_module, monkeypatch):
         "builtin.translate",
         "builtin.rotate",
         "builtin.scale",
-        "builtin.mirror",
     ]
+    assert snapshot["mirror_group_buttons"][0]["value"] == "builtin.mirror"
     assert [button["value"] for button in snapshot["gizmo_buttons"]] == ["builtin.brush"]
 
     controller.dispatch("tool", "builtin.translate")
@@ -396,8 +397,9 @@ def test_transform_tools_use_flyout_group(toolbar_module, monkeypatch):
     assert snapshot["transform_group_buttons"][0]["selected"] is True
     assert snapshot["transform_group_buttons"][0]["icon_src"] == "../icon/translation.png"
     assert next(button for button in snapshot["transform_tool_buttons"] if button["value"] == "builtin.translate")["selected"] is True
-    assert snapshot["show_submode_toolbar"] is True
-    assert snapshot["show_pivot_toolbar"] is True
+    assert snapshot["show_transform_toolbar"] is True
+    assert snapshot["show_transform_space_controls"] is True
+    assert snapshot["show_transform_pivot_controls"] is True
     assert next(button for button in snapshot["submode_buttons"] if button["value"] == "world")["selected"] is True
     assert next(button for button in snapshot["pivot_buttons"] if button["value"] == "origin")["selected"] is True
 
@@ -420,11 +422,11 @@ def test_transform_tools_use_flyout_group(toolbar_module, monkeypatch):
     snapshot = controller.snapshot()
 
     assert state.active_tool == "builtin.mirror"
-    assert snapshot["transform_group_buttons"][0]["selected"] is True
-    assert snapshot["transform_group_buttons"][0]["icon_src"] == "../icon/mirror.png"
-    assert next(button for button in snapshot["transform_tool_buttons"] if button["value"] == "builtin.mirror")["selected"] is True
-    assert snapshot["show_submode_toolbar"] is True
-    assert snapshot["show_pivot_toolbar"] is False
+    assert snapshot["transform_group_buttons"][0]["selected"] is False
+    assert snapshot["mirror_group_buttons"][0]["selected"] is True
+    assert snapshot["show_mirror_toolbar"] is True
+    assert snapshot["show_transform_space_controls"] is False
+    assert snapshot["show_transform_pivot_controls"] is False
     assert [button["value"] for button in snapshot["submode_buttons"]] == ["x", "y", "z"]
 
     controller.dispatch("submode", "y")
@@ -467,7 +469,6 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
         "transform_panel",
         "transform_tool",
         "transform_target",
-        "transform_pivot",
         "transform_bake",
         "transform_reset",
         "transform_position",
@@ -512,13 +513,15 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     assert "secondary-pivot-toolbar" not in rml
     assert "toolbar-context-stack" not in rml
     assert rml.count('data-for="button : gizmo_buttons"') == 2
-    assert rml.count('data-for="button : submode_buttons"') == 1
+    assert rml.count('data-for="button : submode_buttons"') == 3
     assert rml.count('data-for="button : pivot_buttons"') == 1
+    assert rml.count('data-for="button : mirror_group_buttons"') == 2
     assert 'class="toolbar-flyout-divider hidden"' not in rml
-    assert rml.count('class="toolbar-flyout toolbar-flyout-selection hidden"') == 2
-    assert rml.count('class="toolbar-flyout toolbar-flyout-transform hidden"') == 2
+    assert "toolbar-flyout" not in rml
     assert rml.count('data-for="button : selection_group_buttons"') == 2
-    assert rml.count('data-attr-data-shortcut="button.shortcut_text"') == 12
+    assert rml.count('data-attr-data-shortcut="button.shortcut_text"') == 18
+    assert "data-attr-data-tooltip" not in rml
+    assert 'data-attr-title="button.tooltip_text"' in rml
     assert rml.count('data-for="button : selection_mode_buttons"') == 2
     assert rml.count('data-for="button : transform_group_buttons"') == 2
     assert rml.count('data-for="button : transform_tool_buttons"') == 2
@@ -543,10 +546,10 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     assert 'class="viewport-transform-overlay hidden"' in rml
     assert 'class="viewport-transform-header"' in rml
     assert 'class="viewport-transform-context"' in rml
+    assert 'data-class-hidden="!show_transform_space_controls"' in rml
+    assert 'data-class-hidden="!show_transform_pivot_controls"' in rml
     assert 'class="viewport-transform-actions"' in rml
     assert 'data-if="transform_show_actions"' in rml
-    assert 'data-attr-data-tooltip="transform_submode_tooltip_key"' in rml
-    assert "{{transform_submode_label}}" in rml
     assert 'data-event-click="transform_action(\'bake\')"' in rml
     assert 'data-event-click="transform_action(\'reset\')"' in rml
     assert "../icon/check.png" in rml
@@ -624,21 +627,14 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     assert "Pivot: {{transform_pivot_label}}" not in rml
     assert 'id="transform-block"' not in rendering_rml
     assert "toolbar-flyout-anchor" not in rml
-    assert rml.count('class="toolbar-flyout toolbar-flyout-camera hidden"') == 2
-    assert rml.count('class="toolbar-flyout toolbar-flyout-render hidden"') == 2
-    assert rml.count('<span class="flyout-corner-marker"></span>') == 8
+    assert '<span class="flyout-corner-marker"></span>' not in rml
     assert "dropdown-arrow.png" not in rml
     assert "flyout_open" not in rml
     assert 'data-for="button : camera_mode_buttons"' in rml
     assert 'data-for="button : render_mode_buttons"' in rml
     assert 'data-class-selected="button.selected"' in rml
-    assert "toolbar-flyout-camera" in rcss
-    assert ".toolbar-group-container:hover > .toolbar-flyout.hidden" in rcss
-    assert "width: 96dp;" in rcss
-    assert "toolbar-flyout-selection" in rcss
-    assert "width: 192dp;" in rcss
-    assert "toolbar-flyout-transform" in rcss
-    assert "min-width: 128dp;" in rcss
+    assert "toolbar-flyout" not in rcss
+    assert "toolbar-group-container" not in rcss
     assert "toolbar-context-stack" not in rcss
     assert "toolbar-flyout-divider" not in rcss
     assert "viewport-transform-context" in rcss
@@ -651,16 +647,7 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     assert "line-height: 16dp;" in rcss
     assert "line-height: 20dp;" in rcss
     assert "width: 64dp;" in rcss
-    assert "toolbar-flyout-render" in rcss
-    assert "width: 128dp;" in rcss
-    assert "left: 100%;" in rcss
     assert ".toolbar-flyout-trigger.hidden" not in rcss
-    assert "right: 0;" in rcss
-    assert "bottom: 0;" in rcss
-    assert "width: 0;" in rcss
-    assert "height: 0;" in rcss
-    assert "border-left-color: rgba(0, 0, 0, 0);" in rcss
-    assert "border-bottom-width: 9dp;" in rcss
     assert ".viewport-transform-overlay" in rcss
     assert ".viewport-selection-overlay" in rcss
     assert ".viewport-selection-panel" in rcss
@@ -669,7 +656,7 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     assert ".viewport-transform-panel" in rcss
 
 
-def test_viewport_toolbar_update_syncs_camera_group_records(toolbar_module, monkeypatch):
+def test_viewport_toolbar_update_syncs_utility_records(toolbar_module, monkeypatch):
     module, _hook_calls, _remove_calls = toolbar_module
     model = _DataModelStub()
     lf_stub = sys.modules["lichtfeld"]
@@ -704,11 +691,13 @@ def test_viewport_toolbar_update_syncs_camera_group_records(toolbar_module, monk
     module.update_overlay(SimpleNamespace())
 
     camera_buttons = model.handle.record_updates["camera_mode_buttons"]
-    camera_group = model.handle.record_updates["camera_group_buttons"][0]
+    primary_buttons = model.handle.record_updates["utility_primary_buttons"]
+    render_group = model.handle.record_updates["render_group_buttons"][0]
     assert len(camera_buttons) == 3
-    assert camera_group["action"] == "noop"
-    assert camera_group["icon_src"] == "../icon/camera-orbit.png"
-    assert camera_group["selected"] is True
+    assert [button["action"] for button in primary_buttons] == ["home", "fullscreen", "toggle_ui"]
+    assert render_group["action"] == "render_group"
+    assert render_group["icon_src"] == "../icon/blob.png"
+    assert render_group["selected"] is False
 
 
 def test_toolbar_tool_action_refreshes_button_records_immediately(toolbar_module, monkeypatch):
