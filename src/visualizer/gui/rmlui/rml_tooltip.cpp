@@ -65,7 +65,6 @@ namespace lfs::vis::gui {
     }
 
     void RmlTooltipController::setHover(const std::string& text, const void* target) {
-        seen_this_frame_ = true;
         if (text.empty() || !target) {
             pending_text_.clear();
             pending_target_ = nullptr;
@@ -83,13 +82,6 @@ namespace lfs::vis::gui {
                                      const int doc_w, const int doc_h) {
         if (!body)
             return false;
-
-        if (!seen_this_frame_) {
-            pending_text_.clear();
-            pending_target_ = nullptr;
-            hover_started_at_ = {};
-        }
-        seen_this_frame_ = false;
 
         auto* doc = body->GetOwnerDocument();
         auto* tooltip_el = doc ? doc->GetElementById("frame-tooltip") : nullptr;

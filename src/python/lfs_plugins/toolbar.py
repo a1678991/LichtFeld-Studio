@@ -900,6 +900,8 @@ class _ViewportToolbarController:
         if mount_key is not None and mount_key != self._mounted_doc_key:
             self._mounted_doc_key = mount_key
             self._depth_view_controls.mount(doc)
+            self._record_cache = {name: None for name in self._RECORD_FIELDS}
+            self._last_toolbar_signature = None
             self._selection_controls.mount(doc)
             self._transform_controls.mount(doc)
             dirty_sources.append("mount")
@@ -932,13 +934,14 @@ class _ViewportToolbarController:
         if body is None:
             return None
 
-        key = body.get_attribute(_OVERLAY_DOC_KEY_ATTR, "")
+        root = doc.get_element_by_id("dm-root") or body
+        key = root.get_attribute(_OVERLAY_DOC_KEY_ATTR, "")
         if key:
             return key
 
         key = str(self._next_doc_key)
         self._next_doc_key += 1
-        body.set_attribute(_OVERLAY_DOC_KEY_ATTR, key)
+        root.set_attribute(_OVERLAY_DOC_KEY_ATTR, key)
         return key
 
     def _sync_toolbar_state(self, doc=None):

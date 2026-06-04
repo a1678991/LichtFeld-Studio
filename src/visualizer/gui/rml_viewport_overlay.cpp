@@ -28,6 +28,7 @@ namespace lfs::vis::gui {
     namespace {
         [[nodiscard]] bool isInteractiveViewportOverlayElement(const Rml::Element* const element) {
             return element && element->GetTagName() != "body" &&
+                   element->GetTagName() != "#root" &&
                    element->GetId() != "overlay-body" &&
                    element->GetId() != "dm-root";
         }
@@ -58,6 +59,7 @@ namespace lfs::vis::gui {
             }
             return isInteractiveViewportOverlayElement(element) ? element : nullptr;
         }
+
     } // namespace
 
     RmlViewportOverlay::RmlViewportOverlay()
@@ -494,6 +496,7 @@ namespace lfs::vis::gui {
                                             static_cast<int>(vp_pos_.x - screen_origin_.x),
                                             static_cast<int>(vp_pos_.y - screen_origin_.y));
         }
+        const bool external_mouse_capture = guiFocusState().want_capture_mouse;
 
         const float mx = input.mouse_x - vp_pos_.x;
         const float my = input.mouse_y - vp_pos_.y;
@@ -528,10 +531,14 @@ namespace lfs::vis::gui {
         if (mouse_pos_valid_ && !mouse_moved && !pointer_event && !pointer_drag &&
             !keyboard_event && !vram_drag_capture) {
             wants_input_ = hovered_interactive_ || focused_text_target;
+            auto* const hover = hovered_interactive_ ? rml_context_->GetHoverElement() : nullptr;
+            const auto* const hover_root = viewportOverlayHoverRoot(hover);
             if (hovered_interactive_) {
                 guiFocusState().want_capture_mouse = true;
-                if (auto* const hover = rml_context_->GetHoverElement())
-                    tooltip_.setHover(resolveRmlTooltip(hover), hover);
+                if (hover)
+                    tooltip_.setHover(resolveRmlTooltip(hover), hover_root ? hover_root : hover);
+            } else {
+                tooltip_.setHover({}, nullptr);
             }
             if (focused_text_target)
                 guiFocusState().want_capture_keyboard = true;
@@ -542,14 +549,19 @@ namespace lfs::vis::gui {
                                               static_cast<float>(rml_mx),
                                               static_cast<float>(rml_my)))
                                         : nullptr;
-        const bool point_interactive = isInteractiveViewportOverlayElement(point_element);
+        const bool point_interactive = viewportOverlayHoverRoot(point_element) != nullptr;
         const bool hover_target_changed = point_element != last_hover_element_;
+        if (external_mouse_capture && !point_interactive && !hovered_interactive_ &&
+            !vram_drag_capture) {
+            tooltip_.setHover({}, nullptr);
+            return;
+        }
         const bool should_process_mouse_move =
             (mouse_moved || pointer_event) &&
             (was_inside || is_inside || vram_drag_capture) &&
             (pointer_event || pointer_drag || hover_target_changed ||
              hovered_interactive_ || was_inside != is_inside || vram_drag_capture) &&
-            (point_interactive || hovered_interactive_ || was_inside != is_inside ||
+            (is_inside || hovered_interactive_ || was_inside != is_inside ||
              vram_drag_capture);
         if (should_process_mouse_move) {
             mouse_pos_valid_ = true;
@@ -581,7 +593,8 @@ namespace lfs::vis::gui {
 
         auto* const hover = should_process_mouse_move ? rml_context_->GetHoverElement()
                                                       : point_element;
-        const bool over_interactive = is_inside && isInteractiveViewportOverlayElement(hover);
+        const auto* const hover_root = viewportOverlayHoverRoot(hover);
+        const bool over_interactive = is_inside && hover_root != nullptr;
         hovered_interactive_ = over_interactive;
 
         if (over_interactive || vram_drag_capture) {
@@ -610,7 +623,9 @@ namespace lfs::vis::gui {
             }
 
             if (hover)
-                tooltip_.setHover(resolveRmlTooltip(hover), hover);
+                tooltip_.setHover(resolveRmlTooltip(hover), hover_root ? hover_root : hover);
+        } else {
+            tooltip_.setHover({}, nullptr);
         }
 
         // Forward keyboard + text input whenever an RmlUi element on this context owns focus
@@ -845,6 +860,7 @@ namespace lfs::vis::gui {
             markRenderNeeded(RenderReason::DataModelBinding);
             ensureBodyDataModelBound(body_el_);
             data_model_binding_dirty_ = false;
+            document_dirty |= syncBuiltinDocument(true);
         }
         bool tooltip_changed = false;
         if (tooltip_.hasActiveState()) {

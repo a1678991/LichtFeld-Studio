@@ -1005,6 +1005,10 @@ namespace lfs::vis::gui {
         if (hovered) {
             if (auto* const hover = rml_context_->GetHoverElement())
                 tooltip_.setHover(resolveRmlTooltip(hover), hover);
+            else
+                tooltip_.setHover({}, nullptr);
+        } else {
+            tooltip_.setHover({}, nullptr);
         }
 
         if (input.viewport_keyboard_focus)
