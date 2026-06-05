@@ -226,7 +226,7 @@ def test_selection_controls_show_for_selection_modes(selection_controls_module):
     assert "selection_mode_label" not in model.handle.dirty_calls
 
 
-def test_selection_depth_fallback_far_defaults_to_15(selection_controls_module):
+def test_selection_depth_fallback_far_defaults_to_6(selection_controls_module):
     module, state = selection_controls_module
     panel = module.SelectionControlsController()
     model = _DataModelStub()
@@ -236,8 +236,8 @@ def test_selection_depth_fallback_far_defaults_to_15(selection_controls_module):
     panel.update(_DocumentStub())
 
     assert model.bound_binds["selection_depth_near_str"][0]() == "0.00"
-    assert model.bound_binds["selection_depth_far_str"][0]() == "15.00"
-    assert model.bound_funcs["selection_depth_far_slider_max"]() == "35.000"
+    assert model.bound_binds["selection_depth_far_str"][0]() == "6.00"
+    assert model.bound_funcs["selection_depth_far_slider_max"]() == "26.000"
 
 
 def test_selection_depth_toggle_and_sliders_use_selection_api(selection_controls_module):
