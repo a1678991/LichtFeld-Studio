@@ -1067,7 +1067,7 @@ namespace lfs::vis::gui {
         std::vector<PanelSummary> result;
         for (const auto& p : panels_) {
             if (p.space == space && p.enabled && !p.error_disabled && p.parent_id.empty())
-                result.push_back({p.label, p.id, p.space, p.order, p.enabled});
+                result.push_back({p.label, p.id, p.space, p.order, p.enabled, p.tab_closeable});
         }
         std::stable_sort(result.begin(), result.end(), [](const PanelSummary& a, const PanelSummary& b) {
             if (a.order != b.order)

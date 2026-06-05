@@ -3135,6 +3135,15 @@ namespace lfs::vis::gui {
         rml_right_panel_.on_tab_changed = [this](const std::string& id) {
             panel_layout_.setActiveTab(id);
         };
+        rml_right_panel_.on_tab_closed = [this](const std::string& id) {
+            if (id.empty())
+                return;
+            PanelRegistry::instance().set_panel_enabled(id, false);
+            if (panel_layout_.getActiveTab() == id)
+                panel_layout_.setActiveTab({});
+            if (focus_panel_name_ == id)
+                focus_panel_name_.clear();
+        };
         rml_right_panel_.on_splitter_delta = [this](float delta_y) {
             viewer_->getRenderingManager()->setViewportResizeActive(true);
             const auto* mvp = ImGui::GetMainViewport();
@@ -5240,6 +5249,7 @@ namespace lfs::vis::gui {
                     .id = t.id,
                     .label = t.label,
                     .dom_id = makeRmlTabDomId(t.id),
+                    .closeable = t.tab_closeable,
                 });
             }
 
