@@ -16,11 +16,11 @@
 #include "scene/scene_manager.hpp"
 #include "visualizer/scene_coordinate_utils.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/euler_angles.hpp>
-#include <algorithm>
-#include <cmath>
 #include <limits>
 #include <memory>
 
