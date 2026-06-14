@@ -44,7 +44,7 @@ namespace lichtfeld::Strings {
             inline constexpr const char* MENU = "menu.help";
             inline constexpr const char* ABOUT = "menu.help.about";
         } // namespace Help
-    } // namespace Menu
+    }     // namespace Menu
 
     namespace Window {
         inline constexpr const char* ABOUT = "window.about";
@@ -89,7 +89,7 @@ namespace lichtfeld::Strings {
             inline constexpr const char* ENABLED = "about.interop.enabled";
             inline constexpr const char* DISABLED = "about.interop.disabled";
         } // namespace Interop
-    } // namespace About
+    }     // namespace About
 
     namespace Training {
         namespace Section {
@@ -205,7 +205,6 @@ namespace lichtfeld::Strings {
             inline constexpr const char* ITERATIONS = "training.tooltip.iterations";
             inline constexpr const char* MAX_GAUSSIANS = "training.tooltip.max_gaussians";
             inline constexpr const char* SH_DEGREE = "training.tooltip.sh_degree";
-            inline constexpr const char* TILE_MODE = "training.tooltip.tile_mode";
             inline constexpr const char* STEPS_SCALER = "training.tooltip.steps_scaler";
             inline constexpr const char* BILATERAL_GRID = "training.tooltip.bilateral_grid";
             inline constexpr const char* MASK_MODE = "training.tooltip.mask_mode";
@@ -278,7 +277,7 @@ namespace lichtfeld::Strings {
             inline constexpr const char* ADD = "training.button.add";
             inline constexpr const char* REMOVE = "training.button.remove";
         } // namespace Button
-    } // namespace Training
+    }     // namespace Training
 
     namespace Scene {
         inline constexpr const char* ADD_PLY = "scene.add_ply";
@@ -739,7 +738,6 @@ namespace lichtfeld::Strings {
         inline constexpr const char* ITERATIONS = "training_params.iterations";
         inline constexpr const char* MAX_GAUSSIANS = "training_params.max_gaussians";
         inline constexpr const char* SH_DEGREE = "training_params.sh_degree";
-        inline constexpr const char* TILE_MODE = "training_params.tile_mode";
         inline constexpr const char* STEPS_SCALER = "training_params.steps_scaler";
         inline constexpr const char* BILATERAL_GRID = "training_params.bilateral_grid";
         inline constexpr const char* MASK_MODE = "training_params.mask_mode";

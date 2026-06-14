@@ -329,7 +329,6 @@
     "tooltip.iterations": "トレーニングの総イテレーション数",
     "tooltip.max_gaussians": "最大ガウシアン数",
     "tooltip.sh_degree": "球面調和関数の次数 (0-3)",
-    "tooltip.tile_mode": "大きな画像用のタイルレンダリング",
     "tooltip.steps_scaler": "トレーニングステップをスケール。画像数から自動計算（300枚以下は1.0、超過時は画像数/300）",
     "tooltip.bilateral_grid": "露出/色補正用の外観埋め込み",
     "tooltip.sparsity": "モデル圧縮用のプルーニングを有効化",
@@ -482,11 +481,6 @@
           "1": "一次 SH — 基本的なスペキュラ手がかり",
           "2": "二次 SH — より良いビュー依存色",
           "3": "三次 SH — 最高品質、最大 VRAM"
-        },
-        "tile_mode": {
-          "full": "完全解像度のラスタライズ",
-          "half": "半解像度ラスタライズ（約 4 倍高速）",
-          "quarter": "四分の一解像度ラスタライズ（約 16 倍高速）"
         },
         "mask_mode": {
           "none": "画像全体で学習、マスクなし",
@@ -1239,7 +1233,6 @@
     "iterations": "Iterations:",
     "max_gaussians": "Max Gaussians:",
     "sh_degree": "SH Degree:",
-    "tile_mode": "Tile Mode:",
     "steps_scaler": "Steps Scaler:",
     "bilateral_grid": "Bilateral Grid:",
     "mask_mode": "Mask Mode:",

@@ -152,7 +152,6 @@ namespace lfs::core {
             opt_json["random"] = random;
             opt_json["init_num_pts"] = init_num_pts;
             opt_json["init_extent"] = init_extent;
-            opt_json["tile_mode"] = tile_mode;
             opt_json["enable_sparsity"] = enable_sparsity;
             opt_json["sparsify_steps"] = sparsify_steps;
             opt_json["init_rho"] = init_rho;
@@ -445,9 +444,6 @@ namespace lfs::core {
             }
             if (json.contains("init_extent")) {
                 params.init_extent = json["init_extent"];
-            }
-            if (json.contains("tile_mode")) {
-                params.tile_mode = json["tile_mode"];
             }
             if (json.contains("enable_sparsity")) {
                 params.enable_sparsity = json["enable_sparsity"];

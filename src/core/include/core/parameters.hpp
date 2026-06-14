@@ -188,9 +188,6 @@ namespace lfs::core {
             int init_num_pts = 100'000; // Number of random points to initialize
             float init_extent = 3.0f;   // Extent of random point cloud
 
-            // Tile mode for memory-efficient 3DGUT training (ignored for 3DGS/FastGS)
-            int tile_mode = 1;
-
             // Sparsity optimization parameters
             bool enable_sparsity = false;
             int sparsify_steps = 15000;

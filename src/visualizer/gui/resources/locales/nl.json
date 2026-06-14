@@ -329,7 +329,6 @@
     "tooltip.iterations": "Totaal aantal trainingsiteraties",
     "tooltip.max_gaussians": "Maximaal aantal Gaussians",
     "tooltip.sh_degree": "Sferische harmonischen graad (0-3)",
-    "tooltip.tile_mode": "Getegelde rendering voor grote afbeeldingen",
     "tooltip.steps_scaler": "Schaal trainingsstappen. Automatisch berekend uit beeldaantal (1.0 voor <=300, beelden/300 voor meer)",
     "tooltip.bilateral_grid": "Uiterlijk embedding voor belichting/kleurcorrectie",
     "tooltip.sparsity": "Schakel snoeien in voor modelcompressie",
@@ -482,11 +481,6 @@
           "1": "SH eerste orde — basale speculaire aanwijzingen",
           "2": "SH tweede orde — betere blikrichting-afhankelijke kleur",
           "3": "SH derde orde — beste kwaliteit, meeste VRAM"
-        },
-        "tile_mode": {
-          "full": "Rasterisatie op volledige resolutie",
-          "half": "Rasterisatie op halve resolutie (~4× sneller)",
-          "quarter": "Rasterisatie op kwartresolutie (~16× sneller)"
         },
         "mask_mode": {
           "none": "Train op de hele afbeelding, geen masker",
@@ -1239,7 +1233,6 @@
     "iterations": "Iterations:",
     "max_gaussians": "Max Gaussians:",
     "sh_degree": "SH Degree:",
-    "tile_mode": "Tile Mode:",
     "steps_scaler": "Steps Scaler:",
     "bilateral_grid": "Bilateral Grid:",
     "mask_mode": "Mask Mode:",

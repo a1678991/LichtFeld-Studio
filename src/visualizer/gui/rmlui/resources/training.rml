@@ -89,14 +89,6 @@
           <option value="3" data-tooltip="training.tooltip.opt.sh_degree.3">3</option>
         </select>
       </div>
-      <div class="setting-row" data-tooltip="training.tooltip.tile_mode" data-if="dep_gut">
-        <span class="prop-label">{{label_tile_mode}}</span>
-        <select data-value="tile_mode_str">
-          <option value="1" data-tooltip="training.tooltip.opt.tile_mode.full">{{label_tile_full}}</option>
-          <option value="2" data-tooltip="training.tooltip.opt.tile_mode.half">{{label_tile_half}}</option>
-          <option value="4" data-tooltip="training.tooltip.opt.tile_mode.quarter">{{label_tile_quarter}}</option>
-        </select>
-      </div>
       <div class="setting-row" data-tooltip="training.tooltip.steps_scaler">
         <span class="prop-label">{{label_steps_scaler}}</span>
         <input type="text" class="number-input" data-value="steps_scaler_str" />

@@ -1912,15 +1912,6 @@ class OptimizationParams:
     def enable_eval(self, arg: bool, /) -> None: ...
 
     @property
-    def tile_mode(self) -> int:
-        """
-        Tile mode for 3DGUT training only (1, 2, or 4; ignored for 3DGS/FastGS)
-        """
-
-    @tile_mode.setter
-    def tile_mode(self, arg: int, /) -> None: ...
-
-    @property
     def steps_scaler(self) -> float:
         """Scale factor for training step counts"""
 
@@ -2203,7 +2194,7 @@ class DatasetParams:
     @property
     def centralize_dataset(self) -> str:
         """
-        Dataset centralization mode used for the last load: 'none', 'auto', 'by_pointcloud', 'by_cameras'
+        Dataset centralization mode used for the last load: 'off', 'by_pointcloud', 'by_cameras'
         """
 
 def dataset_params() -> DatasetParams:

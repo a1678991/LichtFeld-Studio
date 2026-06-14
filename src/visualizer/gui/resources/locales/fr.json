@@ -329,7 +329,6 @@
     "tooltip.iterations": "Nombre total d'itérations d'entraînement",
     "tooltip.max_gaussians": "Nombre maximum de Gaussiens",
     "tooltip.sh_degree": "Degré des harmoniques sphériques (0-3)",
-    "tooltip.tile_mode": "Rendu par tuiles pour grandes images",
     "tooltip.steps_scaler": "Échelle des étapes d'entraînement. Auto-calculé selon les images (1.0 pour <=300, images/300 au-delà)",
     "tooltip.bilateral_grid": "Embedding d'apparence pour correction exposition/couleur",
     "tooltip.sparsity": "Activer l'élagage pour compression du modèle",
@@ -482,11 +481,6 @@
           "1": "SH premier ordre — indices spéculaires basiques",
           "2": "SH deuxième ordre — meilleure couleur dépendante de la vue",
           "3": "SH troisième ordre — meilleure qualité, plus de VRAM"
-        },
-        "tile_mode": {
-          "full": "Rastérisation pleine résolution",
-          "half": "Rastérisation demi-résolution (~4× plus rapide)",
-          "quarter": "Rastérisation quart de résolution (~16× plus rapide)"
         },
         "mask_mode": {
           "none": "Entraîner sur toute l'image, sans masque",
@@ -1239,7 +1233,6 @@
     "iterations": "Iterations:",
     "max_gaussians": "Max Gaussians:",
     "sh_degree": "SH Degree:",
-    "tile_mode": "Tile Mode:",
     "steps_scaler": "Steps Scaler:",
     "bilateral_grid": "Bilateral Grid:",
     "mask_mode": "Mask Mode:",

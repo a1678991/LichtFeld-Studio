@@ -884,13 +884,6 @@ namespace lfs::training {
         }
     } // namespace
 
-    // Tile configuration for memory-efficient training
-    enum class TileMode {
-        One = 1, // 1 tile  - 1x1 - Render full image (no tiling)
-        Two = 2, // 2 tiles - 2x1 - Two horizontal tiles
-        Four = 4 // 4 tiles - 2x2 - Four tiles in a grid
-    };
-
     void Trainer::cleanup() {
         LOG_DEBUG("Cleaning up trainer for re-initialization");
 
@@ -1894,7 +1887,6 @@ namespace lfs::training {
             memory_breakdown_logged_first_batch_ = false;
             memory_breakdown_logged_first_raster_ = false;
             memory_breakdown_logged_first_step_ = false;
-            fastgs_tiling_warning_logged_ = false;
 
             if (params_.optimization.enable_sparsity) {
                 const size_t stop_refine_limit = static_cast<size_t>(std::max(0, get_regular_iterations()));
@@ -2832,43 +2824,7 @@ namespace lfs::training {
                 bg_image = get_random_background_for_camera(cam->image_width(), cam->image_height(), iter);
             }
 
-            // Configurable tile-based training to reduce peak memory in 3DGUT.
-            const int full_width = cam->image_width();
-            const int full_height = cam->image_height();
             const bool fastgs_path = !params_.optimization.gut;
-
-            // Read tile mode from parameters (1=1 tile, 2=2 tiles, 4=4 tiles)
-            const TileMode requested_tile_mode = static_cast<TileMode>(params_.optimization.tile_mode);
-            TileMode tile_mode = requested_tile_mode;
-            if (fastgs_path && requested_tile_mode != TileMode::One) {
-                if (!fastgs_tiling_warning_logged_) {
-                    LOG_WARN("tile_mode={} was requested, but tiled training is only available for 3DGUT. 3DGS/FastGS will render full images with tile_mode=1.",
-                             params_.optimization.tile_mode);
-                    fastgs_tiling_warning_logged_ = true;
-                }
-                tile_mode = TileMode::One;
-            }
-
-            // Determine tile configuration
-            int tile_rows = 1, tile_cols = 1;
-            switch (tile_mode) {
-            case TileMode::One:
-                tile_rows = 1;
-                tile_cols = 1;
-                break;
-            case TileMode::Two:
-                tile_rows = 2;
-                tile_cols = 1;
-                break;
-            case TileMode::Four:
-                tile_rows = 2;
-                tile_cols = 2;
-                break;
-            }
-
-            const int tile_width = full_width / tile_cols;
-            const int tile_height = full_height / tile_rows;
-            const int num_tiles = tile_rows * tile_cols;
 
             if (!loss_accumulator_.is_valid()) {
                 loss_accumulator_ = core::Tensor::zeros({1}, core::Device::CUDA);
@@ -2895,7 +2851,7 @@ namespace lfs::training {
             const bool in_sparsification = get_active_sparsify_steps() > 0 &&
                                            iter > get_sparsity_boundary_iteration();
 
-            // Determine controller phase before tile loop (does not depend on tile results)
+            // Determine controller phase before render (does not depend on render results)
             const bool known_ppisp_camera = ppisp_ && ppisp_->is_known_camera(cam->camera_id());
             const int ppisp_cam_idx = known_ppisp_camera ? ppisp_->camera_index(cam->camera_id()) : -1;
             const int ppisp_activation_step = params_.optimization.resolved_ppisp_controller_activation_step(get_total_iterations());
@@ -3012,47 +2968,13 @@ namespace lfs::training {
                 }
             }
 
-            // Loop over tiles (row-major order)
-            for (int tile_idx = 0; tile_idx < num_tiles; ++tile_idx) {
-                const int tile_row = tile_idx / tile_cols;
-                const int tile_col = tile_idx % tile_cols;
-                const int tile_x_offset = tile_col * tile_width;
-                const int tile_y_offset = tile_row * tile_height;
+            {
+                nvtxRangePush("rasterize");
 
-                nvtxRangePush(std::format("tile_{}x{}", tile_row, tile_col).c_str());
-
-                // Extract GT image tile
-                lfs::core::Tensor gt_tile;
-                // Extract background image tile (if using background image)
+                lfs::core::Tensor gt_tile = gt_image;
                 lfs::core::Tensor bg_tile;
-                {
-                    LFS_VRAM_SCOPE("train.tile_inputs");
-                    LOG_VRAM_DIFF("train.tile_inputs");
-                    if (num_tiles == 1) {
-                        // No tiling - use full image
-                        gt_tile = gt_image;
-                    } else if (gt_image.shape()[0] == 3) {
-                        // CHW layout: gt_image is [3, H, W]
-                        // Slice both height and width dimensions
-                        auto tile_h = gt_image.slice(1, tile_y_offset, tile_y_offset + tile_height);
-                        gt_tile = tile_h.slice(2, tile_x_offset, tile_x_offset + tile_width);
-                    } else {
-                        // HWC layout: gt_image is [H, W, 3]
-                        auto tile_h = gt_image.slice(0, tile_y_offset, tile_y_offset + tile_height);
-                        gt_tile = tile_h.slice(1, tile_x_offset, tile_x_offset + tile_width);
-                    }
-
-                    if (bg_image.is_valid() && !bg_image.is_empty()) {
-                        if (num_tiles == 1) {
-                            // No tiling - use full image
-                            bg_tile = bg_image;
-                        } else {
-                            // CHW layout: bg_image is [3, H, W]
-                            // Slice both height and width dimensions
-                            auto tile_h = bg_image.slice(1, tile_y_offset, tile_y_offset + tile_height);
-                            bg_tile = tile_h.slice(2, tile_x_offset, tile_x_offset + tile_width);
-                        }
-                    }
+                if (bg_image.is_valid() && !bg_image.is_empty()) {
+                    bg_tile = bg_image;
                 }
 
                 // Render the tile
@@ -3067,11 +2989,9 @@ namespace lfs::training {
                     LFS_VRAM_SCOPE("train.rasterize_forward");
                     LOG_VRAM_DIFF("train.rasterize_forward");
                     if (params_.optimization.gut) {
-                        const int tw = (num_tiles > 1) ? tile_width : 0;
-                        const int th = (num_tiles > 1) ? tile_height : 0;
                         auto rasterize_result = gsplat_rasterize_forward(
                             *cam, strategy_->get_model(), bg,
-                            tile_x_offset, tile_y_offset, tw, th,
+                            0, 0, 0, 0,
                             1.0f, false, GsplatRenderMode::RGB, true, bg_tile);
 
                         if (!rasterize_result) {
@@ -3083,12 +3003,9 @@ namespace lfs::training {
                         output = std::move(rasterize_result->first);
                         gsplat_ctx.emplace(std::move(rasterize_result->second));
                     } else {
-                        // Standard 3DGS/FastGS mode renders full images; tiling is 3DGUT-only.
                         auto rasterize_result = fast_rasterize_forward(
                             *cam, strategy_->get_model(), bg,
-                            tile_x_offset, tile_y_offset,
-                            (num_tiles > 1) ? tile_width : 0, // 0 means full image
-                            (num_tiles > 1) ? tile_height : 0,
+                            0, 0, 0, 0,
                             params_.optimization.mip_filter, bg_tile);
 
                         // Check for OOM error
@@ -3096,9 +3013,9 @@ namespace lfs::training {
                             const std::string& error = rasterize_result.error();
                             if (error.find("OUT_OF_MEMORY") != std::string::npos) {
                                 nvtxRangePop(); // rasterize_forward
-                                nvtxRangePop(); // tile
+                                nvtxRangePop(); // rasterize
 
-                                LOG_ERROR("OUT OF MEMORY in 3DGS/FastGS training. Tiling is only available for 3DGUT; enable --gut to use tiled training.");
+                                LOG_ERROR("OUT OF MEMORY in 3DGS/FastGS training.");
                                 LOG_ERROR("Arena error: {}", error);
                                 return std::unexpected(error);
                             }
@@ -3115,7 +3032,10 @@ namespace lfs::training {
                             fast_ctx->release_forward_context();
                             nvtxRangePop();
                             nvtxRangePop();
-                            continue;
+                            LOG_DEBUG("Skipping iteration {} - no visible primitives", iter);
+                            return iter < get_total_iterations() && !stop_requested_.load() && !stop_token.stop_requested()
+                                       ? StepResult::Continue
+                                       : StepResult::Stop;
                         }
                     }
                 }
@@ -3198,10 +3118,6 @@ namespace lfs::training {
                             }
 
                             lfs::core::Tensor mask_tile = mask;
-                            if (num_tiles > 1 && mask.ndim() == 2) {
-                                auto tile_h = mask.slice(0, tile_y_offset, tile_y_offset + tile_height);
-                                mask_tile = tile_h.slice(1, tile_x_offset, tile_x_offset + tile_width);
-                            }
 
                             auto result = compute_photometric_loss_with_mask(
                                 corrected_image, gt_tile, mask_tile, output.alpha, params_.optimization, raw_loss_input);
@@ -3321,10 +3237,6 @@ namespace lfs::training {
                             }
 
                             mask_tile = mask;
-                            if (num_tiles > 1 && mask.ndim() == 2) {
-                                auto tile_h = mask.slice(0, tile_y_offset, tile_y_offset + tile_height);
-                                mask_tile = tile_h.slice(1, tile_x_offset, tile_x_offset + tile_width);
-                            }
 
                             auto result = compute_photometric_loss_with_mask(
                                 corrected_image, gt_tile, mask_tile, output.alpha, params_.optimization, raw_loss_input);
@@ -3670,12 +3582,10 @@ namespace lfs::training {
                                      stats.prefetch_queue_size);
                         }
 
-                        LOG_INFO("[MEM] fastgs counts instances={}, image={}x{}, tile_mode={}, num_tiles={}",
+                        LOG_INFO("[MEM] fastgs counts instances={}, image={}x{}",
                                  fast_ctx->forward_ctx.n_instances,
                                  output.width,
-                                 output.height,
-                                 static_cast<int>(tile_mode),
-                                 num_tiles);
+                                 output.height);
                         memory_breakdown_logged_first_raster_ = true;
                     }
 
@@ -3745,11 +3655,8 @@ namespace lfs::training {
                     nvtxRangePop();
                 }
 
-                nvtxRangePop(); // End tile
+                nvtxRangePop(); // End rasterize
             }
-
-            if (tiles_processed > 1)
-                loss_tensor_gpu = loss_tensor_gpu / static_cast<float>(tiles_processed);
 
             if (tiles_processed == 0) {
                 LOG_DEBUG("Skipping iteration {} - no visible primitives", iter);
