@@ -25,6 +25,7 @@ namespace lfs::core {
             None,           // No masking applied
             Segment,        // Soft penalty to enforce alpha→0 in masked areas
             Ignore,         // Completely ignore masked regions in loss
+            SegmentAndIgnore, // 3-band mask (0-255): value<128 ignore, 128<=value<=250 segment, value>250 keep
             AlphaConsistent // Enforce exact alpha values from mask
         };
 
