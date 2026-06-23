@@ -2913,10 +2913,10 @@ namespace lfs::vis {
         const bool use_present_scaling =
             old_swapchain != VK_NULL_HANDLE && present_scaling_capabilities.has_value();
         const VkExtent2D extent = chooseSwapchainExtent(support.capabilities,
-                                                       framebuffer_width,
-                                                       framebuffer_height,
-                                                       old_swapchain != VK_NULL_HANDLE,
-                                                       use_present_scaling ? &*present_scaling_capabilities : nullptr);
+                                                        framebuffer_width,
+                                                        framebuffer_height,
+                                                        old_swapchain != VK_NULL_HANDLE,
+                                                        use_present_scaling ? &*present_scaling_capabilities : nullptr);
         if (extent.width == 0 || extent.height == 0) {
             // Surface reports zero extent (window minimized); skip creation and retry next frame.
             last_error_.clear();
