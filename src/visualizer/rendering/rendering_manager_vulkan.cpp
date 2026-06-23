@@ -634,6 +634,74 @@ namespace lfs::vis {
         }
         initialized_ = true;
 
+        const auto cached_frame_result = [this]() -> VulkanFrameResult {
+            if (vulkan_external_viewport_image_ != VK_NULL_HANDLE) {
+                return {.image = {},
+                        .external_image = vulkan_external_viewport_image_,
+                        .external_image_view = vulkan_external_viewport_image_view_,
+                        .external_image_layout = vulkan_external_viewport_image_layout_,
+                        .external_image_generation = vulkan_external_viewport_image_generation_,
+                        .image_generation = vulkan_viewport_image_generation_,
+                        .size = vulkan_viewport_image_size_,
+                        .flip_y = vulkan_viewport_image_flip_y_};
+            }
+            if (!vulkan_viewport_image_) {
+                return {.image = {},
+                        .image_generation = split_view_image_generation_,
+                        .size = vulkan_viewport_image_size_,
+                        .flip_y = vulkan_viewport_image_flip_y_};
+            }
+            return {.image = vulkan_viewport_image_,
+                    .image_generation = vulkan_viewport_image_generation_,
+                    .size = vulkan_viewport_image_size_,
+                    .flip_y = vulkan_viewport_image_flip_y_};
+        };
+        const auto update_cached_split_position = [this](const bool require_position_change) -> bool {
+            if (!split_view_service_.isActive(settings_)) {
+                return false;
+            }
+
+            const float split_position = std::clamp(settings_.split_position, 0.0f, 1.0f);
+            std::lock_guard lock(vulkan_mesh_frame_mutex_);
+            if (!vulkan_mesh_frame_.split_view.enabled) {
+                return false;
+            }
+
+            auto& split = vulkan_mesh_frame_.split_view;
+            const bool split_position_changed =
+                split.split_position != split_position ||
+                split.left.end_position != split_position ||
+                split.right.start_position != split_position ||
+                (vulkan_mesh_frame_.panels.size() == 2 &&
+                 (vulkan_mesh_frame_.panels[0].end_position != split_position ||
+                  vulkan_mesh_frame_.panels[1].start_position != split_position));
+            if (!split_position_changed) {
+                return !require_position_change;
+            }
+
+            split.split_position = split_position;
+            split.left.start_position = 0.0f;
+            split.left.end_position = split_position;
+            split.right.start_position = split_position;
+            split.right.end_position = 1.0f;
+
+            if (vulkan_mesh_frame_.panels.size() == 2) {
+                vulkan_mesh_frame_.panels[0].start_position = 0.0f;
+                vulkan_mesh_frame_.panels[0].end_position = split_position;
+                vulkan_mesh_frame_.panels[1].start_position = split_position;
+                vulkan_mesh_frame_.panels[1].end_position = 1.0f;
+            }
+            viewport_artifact_service_.invalidateCapturedImage();
+            return true;
+        };
+        const auto has_cached_split_view_output = [this]() -> bool {
+            if (vulkan_viewport_image_size_.x <= 0 || vulkan_viewport_image_size_.y <= 0) {
+                return false;
+            }
+            std::lock_guard lock(vulkan_mesh_frame_mutex_);
+            return vulkan_mesh_frame_.split_view.enabled;
+        };
+
         const auto ensure_auxiliary_rendering_engine =
             [this]() -> std::expected<lfs::rendering::RenderingEngine*, std::string> {
             if (!engine_) {
@@ -668,6 +736,25 @@ namespace lfs::vis {
             markDirty(resize_result.dirty);
         }
         const bool resize_deferring = frame_lifecycle_service_.isResizeDeferring();
+        float scale = std::clamp(settings_.render_scale, 0.25f, 1.0f);
+        if (resize_result.render_interactive_frame) {
+            scale = std::min(scale, kInteractiveResizeRenderScale);
+        }
+        glm::ivec2 render_size(
+            std::max(static_cast<int>(std::lround(static_cast<float>(current_size.x) * scale)), 1),
+            std::max(static_cast<int>(std::lround(static_cast<float>(current_size.y) * scale)), 1));
+
+        const DirtyMask pending_dirty = dirty_mask_.load(std::memory_order_relaxed);
+        const bool only_split_position_pending =
+            (pending_dirty & ~DirtyFlag::SPLIT_POSITION) == 0;
+        if ((pending_dirty & DirtyFlag::SPLIT_POSITION) != 0 &&
+            vulkan_viewport_image_size_ == render_size &&
+            has_cached_split_view_output() &&
+            update_cached_split_position(!only_split_position_pending)) {
+            dirty_mask_.fetch_and(~DirtyFlag::SPLIT_POSITION, std::memory_order_relaxed);
+            LOG_PERF("renderVulkanFrame: split-position early cache HIT (returning cached image)");
+            return cached_frame_result();
+        }
 
         auto* const trainer_manager = scene_manager ? scene_manager->getTrainerManager() : nullptr;
         const bool is_training = scene_manager && scene_manager->hasDataset() &&
@@ -730,13 +817,6 @@ namespace lfs::vis {
             vulkan_viewport_image_ != nullptr ||
             vulkan_external_viewport_image_ != VK_NULL_HANDLE ||
             has_cached_gpu_only_frame;
-        float scale = std::clamp(settings_.render_scale, 0.25f, 1.0f);
-        if (resize_result.render_interactive_frame) {
-            scale = std::min(scale, kInteractiveResizeRenderScale);
-        }
-        glm::ivec2 render_size(
-            std::max(static_cast<int>(std::lround(static_cast<float>(current_size.x) * scale)), 1),
-            std::max(static_cast<int>(std::lround(static_cast<float>(current_size.y) * scale)), 1));
         LOG_PERF("renderVulkanFrame.resize deferring={} render={} completed={} render_scale={:.2f} render_size={}x{} current_size={}x{}",
                  resize_deferring,
                  resize_result.render_interactive_frame,
@@ -786,72 +866,16 @@ namespace lfs::vis {
             return {};
         }
 
-        const auto cached_frame_result = [this]() -> VulkanFrameResult {
-            if (vulkan_external_viewport_image_ != VK_NULL_HANDLE) {
-                return {.image = {},
-                        .external_image = vulkan_external_viewport_image_,
-                        .external_image_view = vulkan_external_viewport_image_view_,
-                        .external_image_layout = vulkan_external_viewport_image_layout_,
-                        .external_image_generation = vulkan_external_viewport_image_generation_,
-                        .image_generation = vulkan_viewport_image_generation_,
-                        .size = vulkan_viewport_image_size_,
-                        .flip_y = vulkan_viewport_image_flip_y_};
-            }
-            if (!vulkan_viewport_image_) {
-                return {.image = {},
-                        .image_generation = split_view_image_generation_,
-                        .size = vulkan_viewport_image_size_,
-                        .flip_y = vulkan_viewport_image_flip_y_};
-            }
-            return {.image = vulkan_viewport_image_,
-                    .image_generation = vulkan_viewport_image_generation_,
-                    .size = vulkan_viewport_image_size_,
-                    .flip_y = vulkan_viewport_image_flip_y_};
-        };
-        const auto update_cached_split_position = [this]() -> bool {
-            if (!split_view_service_.isActive(settings_)) {
-                return false;
-            }
-
-            const float split_position = std::clamp(settings_.split_position, 0.0f, 1.0f);
-            std::lock_guard lock(vulkan_mesh_frame_mutex_);
-            if (!vulkan_mesh_frame_.split_view.enabled) {
-                return false;
-            }
-
-            auto& split = vulkan_mesh_frame_.split_view;
-            const bool split_position_changed =
-                split.split_position != split_position ||
-                split.left.end_position != split_position ||
-                split.right.start_position != split_position ||
-                (vulkan_mesh_frame_.panels.size() == 2 &&
-                 (vulkan_mesh_frame_.panels[0].end_position != split_position ||
-                  vulkan_mesh_frame_.panels[1].start_position != split_position));
-            if (!split_position_changed) {
-                return true;
-            }
-
-            split.split_position = split_position;
-            split.left.start_position = 0.0f;
-            split.left.end_position = split_position;
-            split.right.start_position = split_position;
-            split.right.end_position = 1.0f;
-
-            if (vulkan_mesh_frame_.panels.size() == 2) {
-                vulkan_mesh_frame_.panels[0].start_position = 0.0f;
-                vulkan_mesh_frame_.panels[0].end_position = split_position;
-                vulkan_mesh_frame_.panels[1].start_position = split_position;
-                vulkan_mesh_frame_.panels[1].end_position = 1.0f;
-            }
-            viewport_artifact_service_.invalidateCapturedImage();
-            return true;
-        };
-
+        const DirtyMask split_deferred_dirty = frame_dirty & ~DirtyFlag::SPLIT_POSITION;
         if ((frame_dirty & DirtyFlag::SPLIT_POSITION) != 0 &&
-            (frame_dirty & ~DirtyFlag::SPLIT_POSITION) == 0 &&
             has_cached_viewport_output &&
-            update_cached_split_position()) {
-            LOG_PERF("renderVulkanFrame: split-position cache HIT (returning cached image)");
+            update_cached_split_position(split_deferred_dirty != 0)) {
+            const DirtyMask deferred_dirty = split_deferred_dirty;
+            if (deferred_dirty != 0) {
+                dirty_mask_.fetch_or(deferred_dirty, std::memory_order_relaxed);
+            }
+            LOG_PERF("renderVulkanFrame: split-position cache HIT (returning cached image, deferred_dirty=0x{:x})",
+                     deferred_dirty);
             render_lock.reset();
             return cached_frame_result();
         }
@@ -859,7 +883,7 @@ namespace lfs::vis {
         if (resize_deferring &&
             has_cached_viewport_output &&
             !resize_result.render_interactive_frame) {
-            update_cached_split_position();
+            update_cached_split_position(false);
             constexpr DirtyMask resize_defer_consumed_dirty =
                 DirtyFlag::CAMERA | DirtyFlag::VIEWPORT | DirtyFlag::OVERLAY;
             const DirtyMask deferred_dirty = frame_dirty & ~resize_defer_consumed_dirty;
