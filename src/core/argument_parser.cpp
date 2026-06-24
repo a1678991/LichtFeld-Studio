@@ -1038,6 +1038,8 @@ namespace {
         ::args::ValueFlag<int> sog_iter(parser, "iterations", "K-means iterations for SOG (default: 10)", {"sog-iterations"});
         ::args::ValueFlag<std::string> tiles(parser, "AxB", "Replicate a PLY source across an AxB ground-plane grid (RAD output only)", {"tiles"});
         ::args::ValueFlag<std::string> lod_builder(parser, "builder", "PLY->RAD LOD tree builder: bhatt (default) or octree (hybrid: octree fine levels + similarity-ordered bhatt top, much faster)", {"lod-builder"});
+        ::args::Flag rad_stream(parser, "stream", "RAD output: streamable Spark-compatible chunks (default)", {"stream"});
+        ::args::Flag rad_none_stream(parser, "none-stream", "RAD output: native LichtFeld chunks", {"none-stream"});
         ::args::Flag overwrite(parser, "overwrite", "Overwrite existing files without prompting", {'y', "overwrite"});
 
         std::vector<std::string> args_vec(argv + 1, argv + argc);
@@ -1125,6 +1127,15 @@ namespace {
                 return std::unexpected("--lod-builder requires RAD output (--format rad)");
             }
         }
+
+        if (rad_stream && rad_none_stream) {
+            return std::unexpected("--stream and --none-stream are mutually exclusive");
+        }
+        if ((rad_stream || rad_none_stream) && params.format != param::OutputFormat::RAD) {
+            return std::unexpected("--stream/--none-stream require RAD output (--format rad)");
+        }
+        params.rad_export_mode = rad_none_stream ? param::RadExportMode::NonStream
+                                                 : param::RadExportMode::Stream;
 
         return core_args::ConvertMode{params};
     }

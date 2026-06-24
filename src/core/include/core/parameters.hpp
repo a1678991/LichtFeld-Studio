@@ -307,6 +307,9 @@ namespace lfs::core {
         enum class LodBuilder { BHATT,
                                 OCTREE };
 
+        enum class RadExportMode { Stream,
+                                   NonStream };
+
         // Parameters for the convert command
         struct LFS_CORE_API ConvertParameters {
             std::filesystem::path input_path;
@@ -319,6 +322,7 @@ namespace lfs::core {
             std::uint32_t tiles_x = 1;
             std::uint32_t tiles_y = 1;
             LodBuilder lod_builder = LodBuilder::BHATT;
+            RadExportMode rad_export_mode = RadExportMode::Stream;
             bool overwrite = false; // Skip overwrite prompts
         };
 
