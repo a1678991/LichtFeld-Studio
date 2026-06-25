@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Training Panel - RmlUI with native data binding."""
 
+from contextlib import contextmanager
 import os
 import re
 import threading
@@ -39,6 +40,17 @@ def tr(key):
 def tr_fallback(key, fallback):
     result = lf.ui.tr(key)
     return result if result and result != key else fallback
+
+
+@contextmanager
+def _disabled_scope(layout, disabled):
+    if disabled:
+        layout.begin_disabled(True)
+    try:
+        yield
+    finally:
+        if disabled:
+            layout.end_disabled()
 
 
 class IterationRateTracker:
@@ -700,6 +712,10 @@ class TrainingPanel(Panel):
         model.bind_func("struct_disabled", _params_edit_locked)
         model.bind_func("live_disabled", _params_edit_locked)
         model.bind_func("adv_disabled", _params_edit_locked)
+        model.bind_func(
+            "step_scaling_params_locked",
+            lambda: self._auto_scale_steps_locked,
+        )
         model.bind_func(
             "gut_disabled",
             lambda: p() is not None and p().has_params() and p().strategy == "igs+",
@@ -2985,30 +3001,31 @@ class TrainingPanel(Panel):
                     )
                     layout.table_next_column()
 
-                    self._input_int_row(
-                        layout,
-                        tr("training.refinement.refine_every"),
-                        "refine_every",
-                        params,
-                        10,
-                        100,
-                    )
-                    self._input_int_row(
-                        layout,
-                        tr("training.refinement.start_refine"),
-                        "start_refine",
-                        params,
-                        100,
-                        500,
-                    )
-                    self._input_int_row(
-                        layout,
-                        tr("training.refinement.stop_refine"),
-                        "stop_refine",
-                        params,
-                        1000,
-                        5000,
-                    )
+                    with _disabled_scope(layout, self._auto_scale_steps_locked):
+                        self._input_int_row(
+                            layout,
+                            tr("training.refinement.refine_every"),
+                            "refine_every",
+                            params,
+                            10,
+                            100,
+                        )
+                        self._input_int_row(
+                            layout,
+                            tr("training.refinement.start_refine"),
+                            "start_refine",
+                            params,
+                            100,
+                            500,
+                        )
+                        self._input_int_row(
+                            layout,
+                            tr("training.refinement.stop_refine"),
+                            "stop_refine",
+                            params,
+                            1000,
+                            5000,
+                        )
                     self._input_float_prop_row(
                         layout,
                         tr("training.refinement.gradient_thr"),
@@ -3018,22 +3035,23 @@ class TrainingPanel(Panel):
                         0.0001,
                         "%.6f",
                     )
-                    self._input_int_row(
-                        layout,
-                        tr("training.refinement.reset_every"),
-                        "reset_every",
-                        params,
-                        100,
-                        1000,
-                    )
-                    self._input_int_row(
-                        layout,
-                        tr("training.refinement.sh_upgrade_every"),
-                        "sh_degree_interval",
-                        params,
-                        100,
-                        500,
-                    )
+                    with _disabled_scope(layout, self._auto_scale_steps_locked):
+                        self._input_int_row(
+                            layout,
+                            tr("training.refinement.reset_every"),
+                            "reset_every",
+                            params,
+                            100,
+                            1000,
+                        )
+                        self._input_int_row(
+                            layout,
+                            tr("training.refinement.sh_upgrade_every"),
+                            "sh_degree_interval",
+                            params,
+                            100,
+                            500,
+                        )
                     layout.end_disabled()
             finally:
                 if table_open:
@@ -3308,9 +3326,15 @@ class TrainingPanel(Panel):
                         min_val=0.0,
                         max_val=1.0,
                     )
-                    self._input_int_row(
-                        layout, "Grow Until Iter", "grow_until_iter", params, 1000, 5000
-                    )
+                    with _disabled_scope(layout, self._auto_scale_steps_locked):
+                        self._input_int_row(
+                            layout,
+                            "Grow Until Iter",
+                            "grow_until_iter",
+                            params,
+                            1000,
+                            5000,
+                        )
                     self._input_float_prop_row(
                         layout,
                         "Opacity Decay",
@@ -3431,38 +3455,39 @@ class TrainingPanel(Panel):
         steps = list(params.save_steps)
 
         if can_edit:
-            _, self._new_save_step = layout.input_int_formatted(
-                "##py_new_step", self._new_save_step, 100, 1000
-            )
-            layout.same_line()
-            if layout.button(tr("common.add") + "##py_add"):
-                if self._new_save_step > 0:
-                    params.add_save_step(self._new_save_step)
-                    if params.enable_eval:
-                        self._sync_eval_steps_with_save_steps(params)
-
-            layout.separator()
-
-            for i, step in enumerate(steps):
-                layout.push_id(f"py_step_{i}")
-                layout.set_next_item_width(100)
-                changed, new_val = layout.input_int_formatted("##step", step, 0, 0)
-                if changed and new_val > 0 and new_val != step:
-                    params.remove_save_step(step)
-                    params.add_save_step(new_val)
-                    if params.enable_eval:
-                        self._sync_eval_steps_with_save_steps(params)
-                layout.same_line()
-                if layout.button(tr("common.remove") + "##rm"):
-                    params.remove_save_step(step)
-                    if params.enable_eval:
-                        self._remove_from_eval_steps(params, step)
-                layout.pop_id()
-
-            if not steps:
-                layout.text_colored(
-                    tr("training_panel.no_save_steps"), theme.palette.text_dim
+            with _disabled_scope(layout, self._auto_scale_steps_locked):
+                _, self._new_save_step = layout.input_int_formatted(
+                    "##py_new_step", self._new_save_step, 100, 1000
                 )
+                layout.same_line()
+                if layout.button(tr("common.add") + "##py_add"):
+                    if self._new_save_step > 0:
+                        params.add_save_step(self._new_save_step)
+                        if params.enable_eval:
+                            self._sync_eval_steps_with_save_steps(params)
+
+                layout.separator()
+
+                for i, step in enumerate(steps):
+                    layout.push_id(f"py_step_{i}")
+                    layout.set_next_item_width(100)
+                    changed, new_val = layout.input_int_formatted("##step", step, 0, 0)
+                    if changed and new_val > 0 and new_val != step:
+                        params.remove_save_step(step)
+                        params.add_save_step(new_val)
+                        if params.enable_eval:
+                            self._sync_eval_steps_with_save_steps(params)
+                    layout.same_line()
+                    if layout.button(tr("common.remove") + "##rm"):
+                        params.remove_save_step(step)
+                        if params.enable_eval:
+                            self._remove_from_eval_steps(params, step)
+                    layout.pop_id()
+
+                if not steps:
+                    layout.text_colored(
+                        tr("training_panel.no_save_steps"), theme.palette.text_dim
+                    )
         else:
             if steps:
                 layout.label(", ".join(str(s) for s in steps))

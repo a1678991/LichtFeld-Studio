@@ -364,25 +364,25 @@
             <button class="num-step-btn" data-event-mousedown="num_step('rotation_lr', 1)">+</button>
           </div>
           <span class="status-text status-muted">{{label_refinement_header}}</span>
-          <div class="setting-row" data-tooltip="training.tooltip.refine_every">
+          <div class="setting-row" data-tooltip="training.tooltip.refine_every" data-class-disabled-overlay="step_scaling_params_locked">
             <span class="prop-label">{{label_refine_every}}</span>
             <input type="text" class="number-input" data-value="refine_every_str" />
             <button class="num-step-btn" data-event-mousedown="num_step('refine_every', -1)">-</button>
             <button class="num-step-btn" data-event-mousedown="num_step('refine_every', 1)">+</button>
           </div>
-          <div class="setting-row" data-tooltip="training.tooltip.start_refine">
+          <div class="setting-row" data-tooltip="training.tooltip.start_refine" data-class-disabled-overlay="step_scaling_params_locked">
             <span class="prop-label">{{label_start_refine}}</span>
             <input type="text" class="number-input" data-value="start_refine_str" />
             <button class="num-step-btn" data-event-mousedown="num_step('start_refine', -1)">-</button>
             <button class="num-step-btn" data-event-mousedown="num_step('start_refine', 1)">+</button>
           </div>
-          <div class="setting-row" data-tooltip="training.tooltip.stop_refine">
+          <div class="setting-row" data-tooltip="training.tooltip.stop_refine" data-class-disabled-overlay="step_scaling_params_locked">
             <span class="prop-label">{{label_stop_refine}}</span>
             <input type="text" class="number-input" data-value="stop_refine_str" />
             <button class="num-step-btn" data-event-mousedown="num_step('stop_refine', -1)">-</button>
             <button class="num-step-btn" data-event-mousedown="num_step('stop_refine', 1)">+</button>
           </div>
-          <div class="setting-row" data-if="dep_mrnf" data-tooltip="training.tooltip.grow_until_iter">
+          <div class="setting-row" data-if="dep_mrnf" data-tooltip="training.tooltip.grow_until_iter" data-class-disabled-overlay="step_scaling_params_locked">
             <span class="prop-label">{{label_grow_until_iter}}</span>
             <input type="text" class="number-input" data-value="grow_until_iter_str" />
             <button class="num-step-btn" data-event-mousedown="num_step('grow_until_iter', -1)">-</button>
@@ -394,13 +394,13 @@
             <button class="num-step-btn" data-event-mousedown="num_step('grad_threshold', -1)">-</button>
             <button class="num-step-btn" data-event-mousedown="num_step('grad_threshold', 1)">+</button>
           </div>
-          <div class="setting-row" data-tooltip="training.tooltip.reset_every">
+          <div class="setting-row" data-tooltip="training.tooltip.reset_every" data-class-disabled-overlay="step_scaling_params_locked">
             <span class="prop-label">{{label_reset_every}}</span>
             <input type="text" class="number-input" data-value="reset_every_str" />
             <button class="num-step-btn" data-event-mousedown="num_step('reset_every', -1)">-</button>
             <button class="num-step-btn" data-event-mousedown="num_step('reset_every', 1)">+</button>
           </div>
-          <div class="setting-row" data-tooltip="training.tooltip.sh_upgrade_every">
+          <div class="setting-row" data-tooltip="training.tooltip.sh_upgrade_every" data-class-disabled-overlay="step_scaling_params_locked">
             <span class="prop-label">{{label_sh_degree_interval}}</span>
             <input type="text" class="number-input" data-value="sh_degree_interval_str" />
             <button class="num-step-btn" data-event-mousedown="num_step('sh_degree_interval', -1)">-</button>
@@ -601,7 +601,7 @@
         <span class="text-accent">{{label_hdr_save_steps}}</span>
       </div>
       <div class="section-content collapsed" id="sec-save-steps">
-        <div data-if="save_edit_mode">
+        <div data-if="save_edit_mode" data-class-disabled-overlay="step_scaling_params_locked">
           <div class="setting-row" data-tooltip="training.tooltip.save_step_input">
             <input type="text" id="num-new_step" class="number-input" data-value="new_step_str" />
             <button class="num-step-btn" data-event-mousedown="num_step('new_step', -1)">-</button>
