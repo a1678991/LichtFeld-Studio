@@ -416,6 +416,23 @@
                     </button>
                 </div>
 
+                <div class="toolbar-separator hidden"
+                     data-class-hidden="!show_selection_volume_gizmos"></div>
+                <div class="viewport-transform-option-group viewport-selection-gizmo-group hidden"
+                     data-class-hidden="!show_selection_volume_gizmos">
+                    <button class="icon-btn viewport-transform-option viewport-selection-gizmo"
+                            data-for="button : selection_volume_gizmo_buttons"
+                            data-attr-id="button.button_id"
+                            data-class-selected="button.selected"
+                            data-attr-data-action="button.action_id"
+                            data-attr-data-shortcut="button.shortcut_text"
+                            data-attr-title="button.tooltip_text"
+                            data-attrif-disabled="!button.enabled"
+                            data-event-click="toolbar_action(button.action, button.value)">
+                        <img data-attr-src="button.icon_src" />
+                    </button>
+                </div>
+
                 <div class="viewport-transform-actions viewport-selection-actions">
                     <button class="icon-btn viewport-transform-action"
                             data-tooltip="tooltip.selection_depth_mode"

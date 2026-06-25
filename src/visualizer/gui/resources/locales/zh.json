@@ -578,6 +578,8 @@
     "polygon_selection": "多边形选择",
     "lasso_selection": "套索选择",
     "ring_selection": "环形选择",
+    "box_selection": "盒选",
+    "sphere_selection": "球形选择",
     "color_selection": "Color selection",
     "local_space": "局部空间",
     "world_space": "世界空间",

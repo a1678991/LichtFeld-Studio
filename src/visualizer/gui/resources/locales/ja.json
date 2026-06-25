@@ -748,6 +748,8 @@
     "polygon_selection": "ポリゴン選択",
     "lasso_selection": "投げ縄選択",
     "ring_selection": "リング選択",
+    "box_selection": "ボックス選択",
+    "sphere_selection": "球選択",
     "color_selection": "Color selection",
     "local_space": "ローカル空間",
     "world_space": "ワールド空間",

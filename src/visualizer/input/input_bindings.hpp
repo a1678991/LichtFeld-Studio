@@ -127,6 +127,9 @@ namespace lfs::vis::input {
         HISTOGRAM_ZOOM_MARKED,
         TOGGLE_CAMERA_FRUSTUMS,
         SELECTION_INTERSECT,
+        // Appended to avoid renumbering existing persisted action ids.
+        SELECT_MODE_BOX,
+        SELECT_MODE_SPHERE,
 
     };
 

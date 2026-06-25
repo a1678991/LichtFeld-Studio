@@ -14,7 +14,7 @@ namespace lfs::vis {
         }
 
         void applyGaussianCropBox(lfs::rendering::GaussianFilterState& filters, const FrameContext& ctx) {
-            if (ctx.gizmo.cropbox_active) {
+            if (ctx.gizmo.cropbox_active && ctx.gizmo.cropbox_affects_render) {
                 filters.crop_region = lfs::rendering::GaussianScopedBoxFilter{
                     .bounds =
                         {.min = ctx.gizmo.cropbox_min,
@@ -52,7 +52,7 @@ namespace lfs::vis {
         }
 
         void applyPointCloudCropBox(lfs::rendering::PointCloudFilterState& filters, const FrameContext& ctx) {
-            if (ctx.gizmo.cropbox_active) {
+            if (ctx.gizmo.cropbox_active && ctx.gizmo.cropbox_affects_render) {
                 filters.crop_box = lfs::rendering::BoundingBox{
                     .min = ctx.gizmo.cropbox_min,
                     .max = ctx.gizmo.cropbox_max,
@@ -86,7 +86,7 @@ namespace lfs::vis {
         }
 
         void applyGaussianEllipsoid(lfs::rendering::GaussianFilterState& filters, const FrameContext& ctx) {
-            if (ctx.gizmo.ellipsoid_active) {
+            if (ctx.gizmo.ellipsoid_active && ctx.gizmo.ellipsoid_affects_render) {
                 filters.ellipsoid_region = lfs::rendering::GaussianScopedEllipsoidFilter{
                     .bounds =
                         {.radii = ctx.gizmo.ellipsoid_radii,

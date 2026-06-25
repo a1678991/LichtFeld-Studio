@@ -46,6 +46,7 @@ namespace lfs::vis {
         constexpr float INVALID_SCREEN_POSITION = -1.0e8f;
         constexpr float HOVER_PICK_RADIUS_PX = 12.0f;
         constexpr float RING_PICK_PADDING_PX = 4.0f;
+        constexpr float MIN_VOLUME_SELECTION_RADIUS = 1.0e-3f;
 
         [[nodiscard]] glm::vec2 screenToRender(const glm::vec2& screen, const SelectionService::ViewportInfo& info) {
             const float scale_x = static_cast<float>(info.render_width) / info.width;
@@ -277,6 +278,15 @@ namespace lfs::vis {
                 return nullptr;
             }
             return mask.get();
+        }
+
+        [[nodiscard]] const core::Tensor* selectionMaskForSize(
+            const core::Tensor* const mask,
+            const size_t expected_size) {
+            if (!mask || !mask->is_valid() || mask->numel() != expected_size) {
+                return nullptr;
+            }
+            return mask;
         }
 
         [[nodiscard]] bool nodeMaskRestrictsSelection(const std::vector<bool>& node_mask) {
@@ -1091,6 +1101,79 @@ namespace lfs::vis {
                                "selection.by_color");
     }
 
+    SelectionResult SelectionService::selectBoxVolume(const SelectionMode mode,
+                                                      const SelectionCommitOptions options) {
+        if (!scene_manager_ || !rendering_manager_) {
+            return {false, 0, "Missing managers"};
+        }
+
+        const auto gizmo = rendering_manager_->getGizmoState();
+        if (!gizmo.cropbox_active) {
+            return {false, 0, "No active box selection volume"};
+        }
+
+        const size_t total = activeSelectionGaussianCount(scene_manager_);
+        if (total == 0) {
+            return {true, 0, {}};
+        }
+
+        const glm::mat4 world_to_box = glm::inverse(gizmo.cropbox_transform);
+        const float* const transform_ptr = glm::value_ptr(world_to_box);
+        const auto crop_t = core::Tensor::from_vector(std::vector<float>(transform_ptr, transform_ptr + 16), {4, 4});
+        const auto crop_min =
+            core::Tensor::from_vector({gizmo.cropbox_min.x, gizmo.cropbox_min.y, gizmo.cropbox_min.z}, {3});
+        const auto crop_max =
+            core::Tensor::from_vector({gizmo.cropbox_max.x, gizmo.cropbox_max.y, gizmo.cropbox_max.z}, {3});
+
+        auto selection = core::Tensor::ones({total}, core::Device::CUDA, core::DataType::Bool);
+        applyCropFilter(selection, &crop_t, &crop_min, &crop_max, nullptr, nullptr, false);
+
+        auto filters = defaultFilterState();
+        filters.crop_filter = false;
+        return commitSelection(selection,
+                               mode,
+                               effectiveNodeMask(filters.restrict_to_selected_nodes),
+                               filters,
+                               "selection.box",
+                               options);
+    }
+
+    SelectionResult SelectionService::selectSphereVolume(const SelectionMode mode,
+                                                         const SelectionCommitOptions options) {
+        if (!scene_manager_ || !rendering_manager_) {
+            return {false, 0, "Missing managers"};
+        }
+
+        const auto gizmo = rendering_manager_->getGizmoState();
+        if (!gizmo.ellipsoid_active) {
+            return {false, 0, "No active sphere selection volume"};
+        }
+
+        const size_t total = activeSelectionGaussianCount(scene_manager_);
+        if (total == 0) {
+            return {true, 0, {}};
+        }
+
+        const glm::mat4 world_to_ellipsoid = glm::inverse(gizmo.ellipsoid_transform);
+        const float* const transform_ptr = glm::value_ptr(world_to_ellipsoid);
+        const auto ellip_t =
+            core::Tensor::from_vector(std::vector<float>(transform_ptr, transform_ptr + 16), {4, 4});
+        const auto ellip_radii = core::Tensor::from_vector(
+            {gizmo.ellipsoid_radii.x, gizmo.ellipsoid_radii.y, gizmo.ellipsoid_radii.z}, {3});
+
+        auto selection = core::Tensor::ones({total}, core::Device::CUDA, core::DataType::Bool);
+        applyCropFilter(selection, nullptr, nullptr, nullptr, &ellip_t, &ellip_radii, false);
+
+        auto filters = defaultFilterState();
+        filters.crop_filter = false;
+        return commitSelection(selection,
+                               mode,
+                               effectiveNodeMask(filters.restrict_to_selected_nodes),
+                               filters,
+                               "selection.sphere",
+                               options);
+    }
+
     SelectionResult SelectionService::selectAllFiltered() {
         if (!scene_manager_ || !rendering_manager_) {
             return {false, 0, "Missing managers"};
@@ -1184,7 +1267,9 @@ namespace lfs::vis {
             return {false, 0, "Mask size mismatch"};
         }
 
-        return commitSelection(mask, mode, {}, SelectionFilterState{}, "selection.preview", false);
+        SelectionCommitOptions options;
+        options.push_undo = false;
+        return commitSelection(mask, mode, {}, SelectionFilterState{}, "selection.preview", options);
     }
 
     void SelectionService::beginStroke() {
@@ -1431,6 +1516,7 @@ namespace lfs::vis {
         interactive_selection_.active = true;
         interactive_selection_.shape = shape;
         interactive_selection_.mode = mode;
+        interactive_selection_.generation = ++interactive_selection_generation_;
         interactive_selection_.filters = filters;
         interactive_selection_.brush_radius = brush_radius;
         interactive_selection_.start_pos = start_pos;
@@ -1454,6 +1540,14 @@ namespace lfs::vis {
         case SelectionShape::Polygon:
         case SelectionShape::Rings:
             interactive_selection_.points.push_back(start_pos);
+            break;
+        case SelectionShape::Box:
+        case SelectionShape::Sphere:
+            interactive_selection_.volume_center_world = resolveInteractivePolygonWorldPoint(start_pos);
+            if (!interactive_selection_.volume_center_world) {
+                interactive_selection_ = {};
+                return false;
+            }
             break;
         case SelectionShape::Rectangle:
             break;
@@ -1490,6 +1584,8 @@ namespace lfs::vis {
             break;
         case SelectionShape::Rectangle:
         case SelectionShape::Rings:
+        case SelectionShape::Box:
+        case SelectionShape::Sphere:
             break;
         case SelectionShape::Polygon:
             if (session.dragged_polygon_vertex >= 0 &&
@@ -1651,9 +1747,16 @@ namespace lfs::vis {
             return {false, 0, "Interactive selection is incomplete"};
         }
 
+        const char* undo_name = "select.stroke";
+        if (session.shape == SelectionShape::Box) {
+            undo_name = "selection.box";
+        } else if (session.shape == SelectionShape::Sphere) {
+            undo_name = "selection.sphere";
+        }
+
         const auto result = commitSelection(selection, session.mode,
                                             effectiveNodeMask(session.filters.restrict_to_selected_nodes),
-                                            session.filters, "select.stroke");
+                                            session.filters, undo_name);
         clearInteractivePreviewState();
         interactive_selection_ = {};
         return result;
@@ -1787,6 +1890,12 @@ namespace lfs::vis {
                     context.panel, -1);
                 break;
             }
+            case SelectionShape::Box:
+            case SelectionShape::Sphere:
+                if (const auto geometry = buildInteractiveVolumeGeometry()) {
+                    publishInteractiveVolumeGeometry(*geometry);
+                }
+                break;
             }
         }
 
@@ -1817,7 +1926,7 @@ namespace lfs::vis {
                                                       const std::vector<bool>& node_mask,
                                                       const SelectionFilterState& filters,
                                                       const char* undo_name,
-                                                      const bool push_undo) {
+                                                      const SelectionCommitOptions options) {
         LOG_TIMER("SelectionService::commitSelection");
         if (!scene_manager_ || !rendering_manager_) {
             return {false, 0, "Missing managers"};
@@ -1851,8 +1960,10 @@ namespace lfs::vis {
         const auto existing_mask = scene.getSelectionMask();
         const uint8_t group_id = scene.getActiveSelectionGroup();
         const size_t full_count = scene.getSelectionGaussianCount();
+        const core::Tensor* const base_full_mask = selectionMaskForSize(options.base_selection, full_count);
         const core::Tensor* const existing_full_mask =
-            selectionMaskForSize(existing_mask, full_count);
+            base_full_mask ? base_full_mask : selectionMaskForSize(existing_mask, full_count);
+        const bool using_base_selection = base_full_mask != nullptr;
 
         const bool intersect_mode = (mode == SelectionMode::Intersect);
         if (intersect_mode) {
@@ -1927,14 +2038,16 @@ namespace lfs::vis {
         }
 
         const core::Tensor empty_mask;
-        const auto* existing_ptr = selectionMaskForSize(existing_mask, n);
+        const auto* existing_ptr = using_base_selection
+                                       ? selectionMaskForSize(base_full_mask, n)
+                                       : selectionMaskForSize(existing_mask, n);
         const auto& existing_ref = existing_ptr ? *existing_ptr : empty_mask;
         auto& output_mask = acquireSelectionOutputBuffer(selection_output_buffers_, selection_output_buffer_index_, n);
         const std::vector<bool> empty_node_mask;
         const auto& final_node_mask = commit_node_mask ? *commit_node_mask : empty_node_mask;
         const bool count_groups_in_apply = !use_indexed_commit;
         const bool can_apply_group_deltas =
-            count_groups_in_apply && (!existing_ptr || !scene.selectionGroupCountsDirty());
+            count_groups_in_apply && !using_base_selection && (!existing_ptr || !scene.selectionGroupCountsDirty());
         const auto base_group_counts = can_apply_group_deltas
                                            ? cachedSelectionGroupCounts(scene)
                                            : core::Scene::SelectionGroupCounts{};
@@ -1979,10 +2092,10 @@ namespace lfs::vis {
         }
 
         std::unique_ptr<op::SceneSnapshot> entry;
-        if (push_undo) {
+        if (options.push_undo) {
             LOG_TIMER("commitSelection.snapshot_captureSelection");
             entry = std::make_unique<op::SceneSnapshot>(*scene_manager_, undo_name);
-            if (selection_change_known) {
+            if (selection_change_known && !using_base_selection) {
                 entry->setSelectionChangeHint(selection_changed_count > 0, true);
             }
             entry->captureSelection();
@@ -2331,6 +2444,12 @@ namespace lfs::vis {
             success = buildRingSelection(
                 session.cursor_pos, selection_out, true, !include_polygon_cursor, picked_ring_id_out);
             break;
+        case SelectionShape::Box:
+        case SelectionShape::Sphere:
+            if (const auto geometry = buildInteractiveVolumeGeometry()) {
+                success = buildVolumeSelection(*geometry, selection_out);
+            }
+            break;
         }
 
         if (!success) {
@@ -2646,6 +2765,131 @@ namespace lfs::vis {
         return std::nullopt;
     }
 
+    std::optional<SelectionService::InteractiveVolumeGeometry>
+    SelectionService::buildInteractiveVolumeGeometry() const {
+        const auto& session = interactive_selection_;
+        if (!rendering_manager_ || !session.active ||
+            (session.shape != SelectionShape::Box && session.shape != SelectionShape::Sphere) ||
+            !session.viewport_context || !session.viewport_context->viewport ||
+            !session.viewport_context->info.valid()) {
+            return std::nullopt;
+        }
+
+        if (!session.volume_center_world) {
+            return std::nullopt;
+        }
+        const glm::vec3 center_world = *session.volume_center_world;
+
+        const auto& info = session.viewport_context->info;
+        Viewport projection_viewport = *session.viewport_context->viewport;
+        projection_viewport.windowSize = {info.render_width, info.render_height};
+
+        const auto settings = rendering_manager_->getSettings();
+        const auto render_point = screenToRender(session.cursor_pos, info);
+        const glm::vec3 forward = rendering::cameraForward(projection_viewport.camera.R);
+        float depth = glm::dot(center_world - projection_viewport.camera.t, forward);
+        if (!std::isfinite(depth) || depth <= 0.0f) {
+            depth = glm::length(center_world - projection_viewport.camera.t);
+        }
+        if (!std::isfinite(depth) || depth <= 0.0f) {
+            return std::nullopt;
+        }
+
+        const float ortho_scale = projection_viewport.ortho_scale_override.value_or(settings.ortho_scale);
+        const glm::vec3 drag_world = projection_viewport.unprojectPixel(
+            render_point.x,
+            render_point.y,
+            depth,
+            settings.focal_length_mm,
+            settings.orthographic,
+            ortho_scale);
+        if (!Viewport::isValidWorldPosition(drag_world)) {
+            return std::nullopt;
+        }
+
+        const float drag_radius = glm::length(drag_world - center_world);
+        if (!std::isfinite(drag_radius)) {
+            return std::nullopt;
+        }
+        const float radius = std::max(drag_radius, MIN_VOLUME_SELECTION_RADIUS);
+
+        glm::mat4 transform(1.0f);
+        transform[3] = glm::vec4(center_world, 1.0f);
+
+        InteractiveVolumeGeometry geometry;
+        geometry.center_world = center_world;
+        geometry.radius = radius;
+        geometry.visualizer_transform = transform;
+        geometry.box_min = glm::vec3(-radius);
+        geometry.box_max = glm::vec3(radius);
+        geometry.ellipsoid_radii = glm::vec3(radius);
+        return geometry;
+    }
+
+    bool SelectionService::buildVolumeSelection(const InteractiveVolumeGeometry& geometry,
+                                                core::Tensor& selection_out) const {
+        const auto& session = interactive_selection_;
+        if (!selection_out.is_valid() ||
+            (session.shape != SelectionShape::Box && session.shape != SelectionShape::Sphere)) {
+            return false;
+        }
+
+        selection_out.fill_(1.0f, selection_out.stream());
+
+        const glm::mat4 world_to_volume = glm::inverse(geometry.visualizer_transform);
+        const float* const transform_ptr = glm::value_ptr(world_to_volume);
+        const auto transform =
+            core::Tensor::from_vector(std::vector<float>(transform_ptr, transform_ptr + 16), {4, 4});
+
+        if (session.shape == SelectionShape::Box) {
+            const auto box_min = core::Tensor::from_vector(
+                {geometry.box_min.x, geometry.box_min.y, geometry.box_min.z}, {3});
+            const auto box_max = core::Tensor::from_vector(
+                {geometry.box_max.x, geometry.box_max.y, geometry.box_max.z}, {3});
+            applyCropFilter(selection_out, &transform, &box_min, &box_max, nullptr, nullptr, false);
+        } else {
+            const auto radii = core::Tensor::from_vector(
+                {geometry.ellipsoid_radii.x, geometry.ellipsoid_radii.y, geometry.ellipsoid_radii.z}, {3});
+            applyCropFilter(selection_out, nullptr, nullptr, nullptr, &transform, &radii, false);
+        }
+
+        return true;
+    }
+
+    void SelectionService::publishInteractiveVolumeGeometry(const InteractiveVolumeGeometry& geometry) const {
+        const auto& session = interactive_selection_;
+        if (session.shape != SelectionShape::Box && session.shape != SelectionShape::Sphere) {
+            return;
+        }
+
+        if (auto* const gui = services().guiOrNull()) {
+            const auto mode = session.shape == SelectionShape::Sphere
+                                  ? SelectionSubMode::Sphere
+                                  : SelectionSubMode::Box;
+            gui->gizmo().setSelectionVolumeFromDrag(mode,
+                                                    session.mode,
+                                                    session.generation,
+                                                    geometry.center_world,
+                                                    geometry.radius);
+            return;
+        }
+
+        if (!rendering_manager_) {
+            return;
+        }
+
+        if (session.shape == SelectionShape::Box) {
+            rendering_manager_->setCropboxGizmoState(
+                true, geometry.box_min, geometry.box_max, geometry.visualizer_transform, false);
+            rendering_manager_->setEllipsoidGizmoActive(false);
+        } else {
+            rendering_manager_->setEllipsoidGizmoState(
+                true, geometry.ellipsoid_radii, geometry.visualizer_transform, false);
+            rendering_manager_->setCropboxGizmoActive(false);
+        }
+        rendering_manager_->markDirty(DirtyFlag::SPLATS | DirtyFlag::OVERLAY);
+    }
+
     std::vector<glm::vec2> SelectionService::getPolygonPreviewPoints() const {
         const auto& session = interactive_selection_;
         std::vector<glm::vec2> preview_points = session.points;
@@ -2865,7 +3109,13 @@ namespace lfs::vis {
         }
     }
 
-    void SelectionService::applyCropFilter(core::Tensor& selection) const {
+    void SelectionService::applyCropFilter(core::Tensor& selection,
+                                           const core::Tensor* crop_box_transform,
+                                           const core::Tensor* crop_box_min,
+                                           const core::Tensor* crop_box_max,
+                                           const core::Tensor* ellipsoid_transform,
+                                           const core::Tensor* ellipsoid_radii,
+                                           const bool use_scene_filters) const {
         LOG_TIMER("SelectionService::applyCropFilter");
         if (!scene_manager_ || !selection.is_valid()) {
             return;
@@ -2888,35 +3138,60 @@ namespace lfs::vis {
         core::Tensor crop_t;
         core::Tensor crop_min;
         core::Tensor crop_max;
+        const core::Tensor* crop_t_ptr = nullptr;
+        const core::Tensor* crop_min_ptr = nullptr;
+        const core::Tensor* crop_max_ptr = nullptr;
         bool crop_inverse = false;
 
         const auto render_state = [&] {
             LOG_TIMER("applyCropFilter.buildRenderState");
             return scene_manager_->buildRenderState();
         }();
-        if (const auto* const cb =
-                findRenderableByNodeId(render_state.cropboxes, scene_manager_->getActiveSelectionCropBoxId());
-            cb && cb->data) {
-            const glm::mat4 inv_transform = glm::inverse(cb->world_transform);
-            const float* const t_ptr = glm::value_ptr(inv_transform);
-            crop_t = core::Tensor::from_vector(std::vector<float>(t_ptr, t_ptr + 16), {4, 4});
-            crop_min = core::Tensor::from_vector({cb->data->min.x, cb->data->min.y, cb->data->min.z}, {3});
-            crop_max = core::Tensor::from_vector({cb->data->max.x, cb->data->max.y, cb->data->max.z}, {3});
-            crop_inverse = cb->data->inverse;
+        if (crop_box_transform && crop_box_min && crop_box_max) {
+            crop_t_ptr = crop_box_transform;
+            crop_min_ptr = crop_box_min;
+            crop_max_ptr = crop_box_max;
+        } else if (use_scene_filters) {
+            if (const auto* const cb =
+                    findRenderableByNodeId(render_state.cropboxes, scene_manager_->getActiveSelectionCropBoxId());
+                cb && cb->data) {
+                const glm::mat4 inv_transform = glm::inverse(cb->world_transform);
+                const float* const t_ptr = glm::value_ptr(inv_transform);
+                crop_t = core::Tensor::from_vector(std::vector<float>(t_ptr, t_ptr + 16), {4, 4});
+                crop_min = core::Tensor::from_vector({cb->data->min.x, cb->data->min.y, cb->data->min.z}, {3});
+                crop_max = core::Tensor::from_vector({cb->data->max.x, cb->data->max.y, cb->data->max.z}, {3});
+                crop_t_ptr = &crop_t;
+                crop_min_ptr = &crop_min;
+                crop_max_ptr = &crop_max;
+                crop_inverse = cb->data->inverse;
+            }
         }
 
         core::Tensor ellip_t;
         core::Tensor ellip_radii;
+        const core::Tensor* ellip_t_ptr = nullptr;
+        const core::Tensor* ellip_radii_ptr = nullptr;
         bool ellipsoid_inverse = false;
 
-        if (const auto* const el =
-                findRenderableByNodeId(render_state.ellipsoids, scene_manager_->getActiveSelectionEllipsoidId());
-            el && el->data) {
-            const glm::mat4 inv_transform = glm::inverse(el->world_transform);
-            const float* const t_ptr = glm::value_ptr(inv_transform);
-            ellip_t = core::Tensor::from_vector(std::vector<float>(t_ptr, t_ptr + 16), {4, 4});
-            ellip_radii = core::Tensor::from_vector({el->data->radii.x, el->data->radii.y, el->data->radii.z}, {3});
-            ellipsoid_inverse = el->data->inverse;
+        if (ellipsoid_transform && ellipsoid_radii) {
+            ellip_t_ptr = ellipsoid_transform;
+            ellip_radii_ptr = ellipsoid_radii;
+        } else if (use_scene_filters) {
+            if (const auto* const el =
+                    findRenderableByNodeId(render_state.ellipsoids, scene_manager_->getActiveSelectionEllipsoidId());
+                el && el->data) {
+                const glm::mat4 inv_transform = glm::inverse(el->world_transform);
+                const float* const t_ptr = glm::value_ptr(inv_transform);
+                ellip_t = core::Tensor::from_vector(std::vector<float>(t_ptr, t_ptr + 16), {4, 4});
+                ellip_radii = core::Tensor::from_vector({el->data->radii.x, el->data->radii.y, el->data->radii.z}, {3});
+                ellip_t_ptr = &ellip_t;
+                ellip_radii_ptr = &ellip_radii;
+                ellipsoid_inverse = el->data->inverse;
+            }
+        }
+
+        if (!crop_t_ptr && !ellip_t_ptr) {
+            return;
         }
 
         core::Tensor model_transforms_cuda;
@@ -2944,12 +3219,12 @@ namespace lfs::vis {
             LOG_TIMER("applyCropFilter.filter_selection_by_crop");
             rendering::filter_selection_by_crop(
                 selection, means,
-                crop_t.is_valid() ? &crop_t : nullptr,
-                crop_min.is_valid() ? &crop_min : nullptr,
-                crop_max.is_valid() ? &crop_max : nullptr,
+                crop_t_ptr,
+                crop_min_ptr,
+                crop_max_ptr,
                 crop_inverse,
-                ellip_t.is_valid() ? &ellip_t : nullptr,
-                ellip_radii.is_valid() ? &ellip_radii : nullptr,
+                ellip_t_ptr,
+                ellip_radii_ptr,
                 ellipsoid_inverse,
                 model_transforms_ptr,
                 transform_indices_ptr);

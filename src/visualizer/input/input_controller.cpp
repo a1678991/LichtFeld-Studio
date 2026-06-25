@@ -246,6 +246,8 @@ namespace lfs::vis {
             case input::Action::SELECT_MODE_LASSO:
             case input::Action::SELECT_MODE_RINGS:
             case input::Action::SELECT_MODE_COLOR:
+            case input::Action::SELECT_MODE_BOX:
+            case input::Action::SELECT_MODE_SPHERE:
                 return ToolType::Selection;
             case input::Action::TOOL_TRANSLATE:
                 return ToolType::Translate;
@@ -292,6 +294,14 @@ namespace lfs::vis {
             case input::Action::SELECT_MODE_COLOR:
                 submode = SelectionSubMode::Color;
                 submode_id = "color";
+                break;
+            case input::Action::SELECT_MODE_BOX:
+                submode = SelectionSubMode::Box;
+                submode_id = "box";
+                break;
+            case input::Action::SELECT_MODE_SPHERE:
+                submode = SelectionSubMode::Sphere;
+                submode_id = "sphere";
                 break;
             default:
                 return false;

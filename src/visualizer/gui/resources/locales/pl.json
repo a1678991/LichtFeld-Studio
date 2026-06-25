@@ -748,6 +748,8 @@
     "polygon_selection": "Zaznaczenie wielokąta",
     "lasso_selection": "Zaznaczenie lasso",
     "ring_selection": "Zaznaczenie pierścieniowe",
+    "box_selection": "Zaznaczenie pudełkiem",
+    "sphere_selection": "Zaznaczenie sferą",
     "color_selection": "Color selection",
     "local_space": "Przestrzeń Lokalna",
     "world_space": "Przestrzeń Światowa",

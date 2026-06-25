@@ -69,6 +69,9 @@ class InputSettingsPanel(Panel):
             lf.keymap.Action.SELECT_MODE_POLYGON,
             lf.keymap.Action.SELECT_MODE_LASSO,
             lf.keymap.Action.SELECT_MODE_RINGS,
+            lf.keymap.Action.SELECT_MODE_COLOR,
+            lf.keymap.Action.SELECT_MODE_BOX,
+            lf.keymap.Action.SELECT_MODE_SPHERE,
         ],
         "selection_modal": [
             lf.keymap.Action.CONFIRM_POLYGON,

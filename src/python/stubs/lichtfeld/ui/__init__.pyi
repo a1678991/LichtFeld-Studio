@@ -2199,6 +2199,14 @@ def set_crop_tool_shape(shape: str) -> None:
 def get_crop_tool_shape() -> str:
     """Get the active crop tool shape"""
 
+def set_crop_tool_operation(operation: str) -> None:
+    """
+    Set the active crop or selection-volume gizmo operation: translate, rotate, or scale
+    """
+
+def get_crop_tool_operation() -> str:
+    """Get the active crop or selection-volume gizmo operation"""
+
 def apply_crop_tool() -> None:
     """Apply the active crop tool primitive"""
 
@@ -2586,7 +2594,7 @@ def set_cancel_operator_callback(callback: Callable) -> None:
 
 def get_selection_submode() -> int:
     """
-    Get current selection sub-mode (0=Brush, 1=Rectangle, 2=Polygon, 3=Lasso, 4=Rings)
+    Get current selection sub-mode (0=Centers, 1=Rectangle, 2=Polygon, 3=Lasso, 4=Rings, 5=Color, 6=Box, 7=Sphere)
     """
 
 def request_keyboard_capture(owner_id: str) -> None:

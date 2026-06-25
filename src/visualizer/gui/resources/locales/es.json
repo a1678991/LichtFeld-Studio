@@ -72,6 +72,8 @@
     "polygon_selection": "Selección poligonal",
     "lasso_selection": "Selección de lazo",
     "ring_selection": "Selección de anillo",
+    "box_selection": "Selección de caja",
+    "sphere_selection": "Selección esférica",
     "color_selection": "Selección por color",
     "home": "Inicio",
     "focus_selection": "Enfocar selección",

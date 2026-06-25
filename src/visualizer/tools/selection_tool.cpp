@@ -322,6 +322,8 @@ namespace lfs::vis::tools {
             case lfs::vis::SelectionPreviewMode::Rectangle: mode_name = "RECT"; break;
             case lfs::vis::SelectionPreviewMode::Polygon: mode_name = "POLY"; break;
             case lfs::vis::SelectionPreviewMode::Lasso: mode_name = "LASSO"; break;
+            case lfs::vis::SelectionPreviewMode::Box: mode_name = "BOX"; break;
+            case lfs::vis::SelectionPreviewMode::Sphere: mode_name = "SPHERE"; break;
             case lfs::vis::SelectionPreviewMode::Color: mode_name = "COLOR"; break;
             default: break;
             }

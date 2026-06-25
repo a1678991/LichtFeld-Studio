@@ -4881,6 +4881,21 @@ namespace lfs::vis::gui {
                     case lfs::vis::SelectionPreviewMode::Rectangle:
                         rect({mp.x - 12.0f, mp.y - 9.0f}, {mp.x + 12.0f, mp.y + 9.0f});
                         break;
+                    case lfs::vis::SelectionPreviewMode::Box:
+                        rect({mp.x - 11.0f, mp.y - 11.0f}, {mp.x + 11.0f, mp.y + 11.0f});
+                        line({mp.x - 11.0f, mp.y - 11.0f}, {mp.x - 5.0f, mp.y - 17.0f}, 1.5f);
+                        line({mp.x + 11.0f, mp.y - 11.0f}, {mp.x + 17.0f, mp.y - 17.0f}, 1.5f);
+                        line({mp.x + 11.0f, mp.y + 11.0f}, {mp.x + 17.0f, mp.y + 5.0f}, 1.5f);
+                        line({mp.x - 5.0f, mp.y - 17.0f}, {mp.x + 17.0f, mp.y - 17.0f}, 1.5f);
+                        line({mp.x + 17.0f, mp.y - 17.0f}, {mp.x + 17.0f, mp.y + 5.0f}, 1.5f);
+                        break;
+                    case lfs::vis::SelectionPreviewMode::Sphere:
+                        appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles, params,
+                                                        mp, 12.0f, color, 2.0f);
+                        appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles, params,
+                                                        mp, 7.0f, color, 1.5f);
+                        line({mp.x - 12.0f, mp.y}, {mp.x + 12.0f, mp.y}, 1.5f);
+                        break;
                     case lfs::vis::SelectionPreviewMode::Polygon: {
                         const std::array<glm::vec2, 3> pts{{
                             {mp.x, mp.y - 13.0f},

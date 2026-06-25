@@ -243,6 +243,7 @@ def test_toolbar_binds_overlay_model_fields(toolbar_module):
     assert "transform_flyout_open" not in model.bound_funcs
     assert "selection_group_buttons" in model.bound_record_lists
     assert "selection_mode_buttons" in model.bound_record_lists
+    assert "selection_volume_gizmo_buttons" in model.bound_record_lists
     assert "transform_group_buttons" in model.bound_record_lists
     assert "transform_tool_buttons" in model.bound_record_lists
     assert "mirror_group_buttons" in model.bound_record_lists
@@ -255,6 +256,7 @@ def test_toolbar_binds_overlay_model_fields(toolbar_module):
     assert "show_transform_space_controls" in model.bound_funcs
     assert "show_transform_pivot_controls" in model.bound_funcs
     assert "show_crop_toolbar" in model.bound_funcs
+    assert "show_selection_volume_gizmos" in model.bound_funcs
     assert "toolbar_action" in model.bound_events
     assert "selection_tool_label" not in model.bound_funcs
     assert "selection_mode_label" not in model.bound_funcs
@@ -649,6 +651,79 @@ def test_crop_tool_uses_centered_object_and_transform_rows(toolbar_module, monke
     assert state.calls[-1] == ("apply_crop_tool",)
 
 
+def test_selection_volume_modes_show_inline_gizmo_controls(toolbar_module, monkeypatch):
+    module, _hook_calls, _remove_calls = toolbar_module
+    lf_stub = sys.modules["lichtfeld"]
+    state = SimpleNamespace(
+        active_tool="builtin.select",
+        active_submode="box",
+        crop_operation="rotate",
+        calls=[],
+    )
+    select_tool = SimpleNamespace(
+        id="builtin.select",
+        icon="selection",
+        label="Select",
+        shortcut="1",
+        submodes=(
+            SimpleNamespace(id="centers", label="Centers", icon="circle-dot", shortcut=""),
+            SimpleNamespace(id="color", label="Color", icon="color-picker", shortcut=""),
+            SimpleNamespace(id="box", label="Box", icon="box", shortcut=""),
+            SimpleNamespace(id="sphere", label="Sphere", icon="sphere", shortcut=""),
+        ),
+        pivot_modes=(),
+        selected=None,
+        can_activate=lambda _context: True,
+    )
+
+    monkeypatch.setattr(lf_stub.ui, "get_active_tool", lambda: state.active_tool, raising=False)
+    monkeypatch.setattr(lf_stub.ui, "get_active_submode", lambda: state.active_submode, raising=False)
+    monkeypatch.setattr(lf_stub.ui, "set_selection_mode", lambda mode: setattr(state, "active_submode", mode), raising=False)
+    monkeypatch.setattr(lf_stub.ui, "get_crop_tool_operation", lambda: state.crop_operation, raising=False)
+    monkeypatch.setattr(
+        lf_stub.ui,
+        "set_crop_tool_operation",
+        lambda operation: (
+            state.calls.append(("set_crop_tool_operation", operation)),
+            setattr(state, "crop_operation", operation),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(module.ToolRegistry, "get_all", staticmethod(lambda: [select_tool]), raising=False)
+    monkeypatch.setattr(
+        module.ToolRegistry,
+        "get",
+        staticmethod(lambda tool_id: select_tool if tool_id == "builtin.select" else None),
+        raising=False,
+    )
+
+    controller = module._GizmoToolbarController()
+    snapshot = controller.snapshot()
+
+    assert snapshot["show_crop_toolbar"] is False
+    assert snapshot["show_selection_volume_gizmos"] is True
+    assert snapshot["crop_object_buttons"] == []
+    assert snapshot["crop_transform_buttons"] == []
+    assert snapshot["crop_action_buttons"] == []
+    assert [button["value"] for button in snapshot["selection_volume_gizmo_buttons"]] == [
+        "translate",
+        "rotate",
+        "scale",
+    ]
+    assert next(button for button in snapshot["selection_volume_gizmo_buttons"] if button["value"] == "rotate")["selected"] is True
+
+    controller.dispatch("crop_transform", "translate")
+
+    assert state.calls[-1] == ("set_crop_tool_operation", "translate")
+    snapshot = controller.snapshot()
+    assert next(button for button in snapshot["selection_volume_gizmo_buttons"] if button["value"] == "translate")["selected"] is True
+
+    state.active_submode = "color"
+    snapshot = controller.snapshot()
+    assert snapshot["show_selection_volume_gizmos"] is False
+    assert snapshot["selection_volume_gizmo_buttons"] == []
+
+
 def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_centered():
     project_root = Path(__file__).parent.parent.parent
     rml_path = (
@@ -727,10 +802,12 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     assert rml.count('data-for="button : crop_object_buttons"') == 2
     assert rml.count('data-for="button : crop_transform_buttons"') == 2
     assert rml.count('data-for="button : crop_action_buttons"') == 2
+    assert rml.count('data-for="button : selection_volume_gizmo_buttons"') == 1
     assert 'class="toolbar-flyout-divider hidden"' not in rml
     assert "toolbar-flyout" not in rml
     assert rml.count('data-for="button : selection_group_buttons"') == 2
     assert rml.count('class="toolbar-separator"') == 6
+    assert 'class="toolbar-separator hidden"' in rml
     assert rml.count('class="viewport-gizmo-controls"') == 2
     assert rml.count('class="viewport-gizmo-control-row"') == 2
     assert 'id="primary-viewport-gizmo-controls" class="viewport-gizmo-controls"' in rml
@@ -746,10 +823,11 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     for toolbar_markup in (primary_left, secondary_left):
         assert 'data-for="button : camera_mode_buttons"' not in toolbar_markup
         assert 'data-for="button : utility_primary_buttons"' not in toolbar_markup
-    assert rml.count('data-attr-data-shortcut="button.shortcut_text"') == 24
+    assert rml.count('data-attr-data-shortcut="button.shortcut_text"') == 25
     assert "data-attr-data-tooltip" not in rml
     assert 'data-attr-title="button.tooltip_text"' in rml
     assert rml.count('data-for="button : selection_mode_buttons"') == 1
+    assert 'data-class-hidden="!show_selection_volume_gizmos"' in rml
     assert rml.count('data-for="button : transform_group_buttons"') == 2
     assert rml.count('data-for="button : transform_tool_buttons"') == 3
     assert 'id="selection-block"' in rml

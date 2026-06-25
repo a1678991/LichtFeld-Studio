@@ -196,7 +196,7 @@ namespace lfs::python {
     LFS_PYTHON_RUNTIME_API void cancel_active_operator();
     LFS_PYTHON_RUNTIME_API bool invoke_operator(const std::string& operator_id);
 
-    // Selection sub-mode (mirrors panels::SelectionSubMode for Python access)
+    // Selection sub-mode (mirrors vis::SelectionSubMode for Python access)
     LFS_PYTHON_RUNTIME_API void set_selection_submode(int mode);
     LFS_PYTHON_RUNTIME_API int get_selection_submode();
 

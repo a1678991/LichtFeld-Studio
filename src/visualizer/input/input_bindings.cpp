@@ -26,7 +26,8 @@ namespace lfs::vis::input {
 
     namespace {
 
-        constexpr int PROFILE_VERSION = 17; // Version 17 adds the selection intersection drag.
+        constexpr int PROFILE_VERSION = 18; // Version 18 adds box/sphere selection shortcuts.
+        constexpr Action LAST_ACTION = Action::SELECT_MODE_SPHERE;
         constexpr int REMOVED_TOOL_MODE_2 = 2;
         constexpr int REMOVED_ACTION_39 = 39;
         constexpr int REMOVED_ACTION_66 = 66;
@@ -62,7 +63,7 @@ namespace lfs::vis::input {
         [[nodiscard]] std::optional<Action> findActionByDescription(std::string_view description) {
             static const auto* const table = [] {
                 auto* const m = new std::unordered_map<std::string, Action>();
-                constexpr int kActionCount = static_cast<int>(Action::SELECTION_INTERSECT) + 1;
+                constexpr int kActionCount = static_cast<int>(LAST_ACTION) + 1;
                 for (int i = 0; i < kActionCount; ++i) {
                     const auto a = static_cast<Action>(i);
                     m->emplace(toLowerCopy(getActionName(a)), a);
@@ -486,6 +487,9 @@ namespace lfs::vis::input {
                 def.action == Action::APPLY_CROP_BOX &&
                 key_trigger &&
                 key_trigger->key == KEY_KP_ENTER;
+            const bool selection_volume_shortcut =
+                def.action == Action::SELECT_MODE_BOX ||
+                def.action == Action::SELECT_MODE_SPHERE;
             const bool should_add =
                 (version < 6 && def.action == Action::CAMERA_ROLL) ||
                 (version < 7 && def.action == Action::BRUSH_RESIZE && !brush_resize_shift_scroll) ||
@@ -496,7 +500,8 @@ namespace lfs::vis::input {
                 (version < 14 && def.action == Action::HISTOGRAM_ZOOM_MARKED) ||
                 (version < 15 && def.action == Action::APPLY_CROP_BOX) ||
                 (version < 16 && def.action == Action::TOGGLE_CAMERA_FRUSTUMS) ||
-                (version < 17 && def.action == Action::SELECTION_INTERSECT);
+                (version < 17 && def.action == Action::SELECTION_INTERSECT) ||
+                (version < 18 && selection_volume_shortcut);
             if (!should_add) {
                 continue;
             }
@@ -992,6 +997,8 @@ namespace lfs::vis::input {
             {KeyTrigger{KEY_4, MODIFIER_CTRL}, Action::SELECT_MODE_LASSO, "Lasso"},
             {KeyTrigger{KEY_5, MODIFIER_CTRL}, Action::SELECT_MODE_RINGS, "Rings"},
             {KeyTrigger{KEY_6, MODIFIER_CTRL}, Action::SELECT_MODE_COLOR, "Color"},
+            {KeyTrigger{KEY_7, MODIFIER_CTRL}, Action::SELECT_MODE_BOX, "Box"},
+            {KeyTrigger{KEY_8, MODIFIER_CTRL}, Action::SELECT_MODE_SPHERE, "Sphere"},
             {KeyTrigger{KEY_ESCAPE, MODIFIER_NONE}, Action::CANCEL_POLYGON, "Cancel"},
             // UI
             {KeyTrigger{KEY_F12, MODIFIER_NONE}, Action::TOGGLE_UI, "Hide UI"},
@@ -1136,6 +1143,8 @@ namespace lfs::vis::input {
         case Action::SELECT_MODE_LASSO: return "Selection: Lasso";
         case Action::SELECT_MODE_RINGS: return "Selection: Rings";
         case Action::SELECT_MODE_COLOR: return "Selection: Color";
+        case Action::SELECT_MODE_BOX: return "Selection: Box";
+        case Action::SELECT_MODE_SPHERE: return "Selection: Sphere";
         case Action::APPLY_CROP_BOX: return "Apply Crop Box";
         case Action::NODE_PICK: return "Pick Node";
         case Action::NODE_RECT_SELECT: return "Rectangle Select Nodes";
@@ -1214,6 +1223,8 @@ namespace lfs::vis::input {
         case Action::SELECT_MODE_LASSO: return "select_mode_lasso";
         case Action::SELECT_MODE_RINGS: return "select_mode_rings";
         case Action::SELECT_MODE_COLOR: return "select_mode_color";
+        case Action::SELECT_MODE_BOX: return "select_mode_box";
+        case Action::SELECT_MODE_SPHERE: return "select_mode_sphere";
         case Action::APPLY_CROP_BOX: return "apply_crop_box";
         case Action::NODE_PICK: return "node_pick";
         case Action::NODE_RECT_SELECT: return "node_rect_select";
@@ -1238,7 +1249,7 @@ namespace lfs::vis::input {
     std::optional<Action> actionFromName(std::string_view name) {
         static const auto table = [] {
             std::unordered_map<std::string, Action> m;
-            for (int i = 0; i <= static_cast<int>(Action::SELECTION_INTERSECT); ++i) {
+            for (int i = 0; i <= static_cast<int>(LAST_ACTION); ++i) {
                 const auto action = static_cast<Action>(i);
                 const auto key = actionNameKey(action);
                 if (!key.empty())
@@ -1895,6 +1906,8 @@ namespace lfs::vis::input {
         case Action::SELECT_MODE_LASSO:
         case Action::SELECT_MODE_RINGS:
         case Action::SELECT_MODE_COLOR:
+        case Action::SELECT_MODE_BOX:
+        case Action::SELECT_MODE_SPHERE:
             return d_selection_mode_key;
 
         case Action::APPLY_CROP_BOX:
@@ -1946,6 +1959,8 @@ namespace lfs::vis::input {
         case Action::SELECT_MODE_LASSO:
         case Action::SELECT_MODE_RINGS:
         case Action::SELECT_MODE_COLOR:
+        case Action::SELECT_MODE_BOX:
+        case Action::SELECT_MODE_SPHERE:
         case Action::UNDO:
         case Action::REDO:
         case Action::DELETE_SELECTED:

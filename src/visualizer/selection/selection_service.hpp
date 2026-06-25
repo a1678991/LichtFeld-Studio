@@ -8,6 +8,7 @@
 #include "rendering/rendering_types.hpp"
 #include <array>
 #include <cstdint>
+#include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <memory>
@@ -39,7 +40,9 @@ namespace lfs::vis {
         Rectangle,
         Polygon,
         Lasso,
-        Rings
+        Rings,
+        Box,
+        Sphere
     };
 
     struct SelectionResult {
@@ -52,6 +55,11 @@ namespace lfs::vis {
         bool crop_filter = false;
         bool depth_filter = false;
         bool restrict_to_selected_nodes = true;
+    };
+
+    struct SelectionCommitOptions {
+        const core::Tensor* base_selection = nullptr;
+        bool push_undo = true;
     };
 
     class LFS_VIS_API SelectionService {
@@ -87,6 +95,10 @@ namespace lfs::vis {
         [[nodiscard]] SelectionResult selectByColorAt(float x, float y, SelectionMode mode,
                                                       SelectionFilterState filters = {},
                                                       int camera_index = -1);
+        [[nodiscard]] SelectionResult selectBoxVolume(SelectionMode mode,
+                                                      SelectionCommitOptions options = {});
+        [[nodiscard]] SelectionResult selectSphereVolume(SelectionMode mode,
+                                                         SelectionCommitOptions options = {});
         [[nodiscard]] SelectionResult selectAllFiltered();
         [[nodiscard]] SelectionResult invertFiltered();
 
@@ -152,6 +164,7 @@ namespace lfs::vis {
             std::optional<ViewerViewportContext> viewport_context;
             std::vector<glm::vec2> points;
             std::vector<glm::vec3> polygon_world_points;
+            std::optional<glm::vec3> volume_center_world;
             bool polygon_closed = false;
             int dragged_polygon_vertex = -1;
             bool preview_dirty = false;
@@ -159,6 +172,15 @@ namespace lfs::vis {
             core::Tensor live_delta_selection;
             std::vector<bool> live_preview_node_mask;
             size_t preview_brush_point_count = 0;
+            uint64_t generation = 0;
+        };
+        struct InteractiveVolumeGeometry {
+            glm::vec3 center_world{0.0f};
+            float radius = 0.0f;
+            glm::mat4 visualizer_transform{1.0f};
+            glm::vec3 box_min{0.0f};
+            glm::vec3 box_max{0.0f};
+            glm::vec3 ellipsoid_radii{0.0f};
         };
         struct ScreenPositionCacheKey {
             bool valid = false;
@@ -172,7 +194,7 @@ namespace lfs::vis {
                                                       const std::vector<bool>& node_mask,
                                                       const SelectionFilterState& filters,
                                                       const char* undo_name,
-                                                      bool push_undo = true);
+                                                      SelectionCommitOptions options = {});
         [[nodiscard]] core::Tensor& resetBoolScratchBuffer(core::Tensor& buffer, size_t size);
         [[nodiscard]] std::optional<ViewerViewportContext> resolveViewerViewportContext(
             std::optional<glm::vec2> screen_point = std::nullopt,
@@ -221,6 +243,10 @@ namespace lfs::vis {
                                               bool try_exact_ring_pick = true,
                                               bool require_exact_ring_hit = true,
                                               int* picked_ring_id_out = nullptr) const;
+        [[nodiscard]] std::optional<InteractiveVolumeGeometry> buildInteractiveVolumeGeometry() const;
+        [[nodiscard]] bool buildVolumeSelection(const InteractiveVolumeGeometry& geometry,
+                                                core::Tensor& selection_out) const;
+        void publishInteractiveVolumeGeometry(const InteractiveVolumeGeometry& geometry) const;
         [[nodiscard]] std::vector<glm::vec2> getPolygonPreviewPoints() const;
         [[nodiscard]] std::optional<glm::vec2> resolveInteractivePolygonDisplayPoint(size_t index) const;
         [[nodiscard]] int findInteractivePolygonVertexAt(glm::vec2 screen_point) const;
@@ -230,7 +256,13 @@ namespace lfs::vis {
         [[nodiscard]] bool shouldClosePolygonPreview() const;
         void applyFilters(core::Tensor& selection, const SelectionFilterState& filters,
                           const std::vector<bool>& node_mask) const;
-        void applyCropFilter(core::Tensor& selection) const;
+        void applyCropFilter(core::Tensor& selection,
+                             const core::Tensor* crop_box_transform = nullptr,
+                             const core::Tensor* crop_box_min = nullptr,
+                             const core::Tensor* crop_box_max = nullptr,
+                             const core::Tensor* ellipsoid_transform = nullptr,
+                             const core::Tensor* ellipsoid_radii = nullptr,
+                             bool use_scene_filters = true) const;
         void applyDepthFilter(core::Tensor& selection) const;
         void clearInteractivePreviewState();
         [[nodiscard]] std::vector<bool> effectiveNodeMask(bool restrict_to_selected_nodes) const;
@@ -249,6 +281,7 @@ namespace lfs::vis {
         core::Tensor selection_group_counts_scratch_;
         std::array<core::Tensor, 2> selection_output_buffers_;
         size_t selection_output_buffer_index_ = 0;
+        uint64_t interactive_selection_generation_ = 0;
         std::shared_ptr<core::Tensor> testing_screen_positions_;
         std::unordered_map<int, std::shared_ptr<core::Tensor>> testing_camera_screen_positions_;
         std::optional<ViewportInfo> testing_viewport_;

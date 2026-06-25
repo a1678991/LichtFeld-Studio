@@ -748,6 +748,8 @@
     "polygon_selection": "Polygoon selectie",
     "lasso_selection": "Lasso selectie",
     "ring_selection": "Ring selectie",
+    "box_selection": "Boxselectie",
+    "sphere_selection": "Bolselectie",
     "color_selection": "Color selection",
     "local_space": "Lokale Ruimte",
     "world_space": "Wereld Ruimte",
