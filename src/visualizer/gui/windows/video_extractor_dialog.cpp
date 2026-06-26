@@ -21,7 +21,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -191,55 +190,6 @@ namespace lfs::gui {
             if (!end || end == value.c_str())
                 return fallback;
             return static_cast<int>(std::clamp<long>(parsed, 1, 65535));
-        }
-
-        [[nodiscard]] std::string patternExampleStem(const std::string& pattern) {
-            std::string out;
-            out.reserve(pattern.size() + 8);
-
-            bool consumed_value = false;
-            for (size_t i = 0; i < pattern.size(); ++i) {
-                if (pattern[i] != '%' || i + 1 >= pattern.size()) {
-                    out.push_back(pattern[i]);
-                    continue;
-                }
-
-                if (pattern[i + 1] == '%') {
-                    out.push_back('%');
-                    ++i;
-                    continue;
-                }
-
-                size_t j = i + 1;
-                bool zero_pad = false;
-                if (j < pattern.size() && pattern[j] == '0') {
-                    zero_pad = true;
-                    ++j;
-                }
-                int width = 0;
-                while (j < pattern.size() && std::isdigit(static_cast<unsigned char>(pattern[j]))) {
-                    width = width * 10 + (pattern[j] - '0');
-                    ++j;
-                }
-
-                if (j < pattern.size() && pattern[j] == 'd') {
-                    if (zero_pad && width > 1) {
-                        out.append(static_cast<size_t>(width - 1), '0');
-                        out.push_back('1');
-                    } else {
-                        out += "1";
-                    }
-                    i = j;
-                    consumed_value = true;
-                    continue;
-                }
-
-                out.push_back('%');
-            }
-
-            if (!consumed_value)
-                out += "1";
-            return out;
         }
 
     } // namespace
@@ -1065,7 +1015,7 @@ namespace lfs::gui {
                                      ? localizedFormat(VideoExtractor::OUTPUT_RES, out_w, out_h)
                                      : std::format("{} --", LOC(VideoExtractor::OUTPUT)));
         const char* const ext = format_selection_ == 0 ? ".png" : ".jpg";
-        const std::string preview = patternExampleStem(filename_pattern_.data());
+        const std::string preview = io::formatFrameFilenameStem(filename_pattern_.data(), 1);
         changed |= setCachedText(pattern_example_el_,
                                  localizedFormat(VideoExtractor::EXAMPLE, preview.c_str(), ext));
 

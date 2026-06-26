@@ -21,6 +21,7 @@ extern "C" {
 #include <stb_image_write.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <stdexcept>
@@ -33,6 +34,19 @@ namespace lfs::io {
         struct ExtractionCancelled final : std::exception {
             [[nodiscard]] const char* what() const noexcept override { return "Extraction stopped"; }
         };
+
+        constexpr int MAX_FILENAME_FRAME_WIDTH = 64;
+
+        void appendFrameNumber(std::string& out, const int frame_number, const int min_width) {
+            const std::string number = std::to_string(frame_number);
+            if (frame_number < 0 || min_width <= static_cast<int>(number.size())) {
+                out += number;
+                return;
+            }
+
+            out.append(static_cast<size_t>(min_width - static_cast<int>(number.size())), '0');
+            out += number;
+        }
 
         [[nodiscard]] double validFrameRate(const AVRational frame_rate) {
             const double fps = av_q2d(frame_rate);
@@ -118,6 +132,79 @@ namespace lfs::io {
         }
 
     } // namespace
+
+    std::string formatFrameFilenameStem(const std::string_view pattern, const int frame_number) {
+        const std::string_view effective_pattern = pattern.empty() ? std::string_view{"frame_%d"} : pattern;
+        std::string out;
+        out.reserve(effective_pattern.size() + 8);
+
+        bool consumed_value = false;
+        for (size_t i = 0; i < effective_pattern.size(); ++i) {
+            if (effective_pattern[i] != '%' || i + 1 >= effective_pattern.size()) {
+                out.push_back(effective_pattern[i]);
+                continue;
+            }
+
+            if (effective_pattern[i + 1] == '%') {
+                out.push_back('%');
+                ++i;
+                continue;
+            }
+
+            size_t j = i + 1;
+            int min_width = 0;
+            bool found_value = false;
+
+            if (effective_pattern[j] == 'd') {
+                found_value = true;
+            } else if (effective_pattern[j] == '0') {
+                size_t zero_count = 0;
+                while (j < effective_pattern.size() && effective_pattern[j] == '0') {
+                    ++zero_count;
+                    ++j;
+                }
+
+                int parsed_width = 0;
+                while (j < effective_pattern.size() && std::isdigit(static_cast<unsigned char>(effective_pattern[j]))) {
+                    if (parsed_width < MAX_FILENAME_FRAME_WIDTH)
+                        parsed_width = std::min(parsed_width * 10 + (effective_pattern[j] - '0'),
+                                                MAX_FILENAME_FRAME_WIDTH);
+                    ++j;
+                }
+
+                const bool has_d_suffix = j < effective_pattern.size() && effective_pattern[j] == 'd';
+                const bool has_legacy_zero_run =
+                    parsed_width == 0 && zero_count > 1 &&
+                    (j >= effective_pattern.size() ||
+                     !std::isalpha(static_cast<unsigned char>(effective_pattern[j])));
+                found_value = has_d_suffix || has_legacy_zero_run;
+
+                if (found_value) {
+                    min_width = parsed_width > 0
+                                    ? parsed_width
+                                    : static_cast<int>(has_legacy_zero_run || zero_count > 1
+                                                           ? std::min<size_t>(zero_count + 1, MAX_FILENAME_FRAME_WIDTH)
+                                                           : 0);
+                    if (!has_d_suffix)
+                        --j;
+                }
+            }
+
+            if (found_value) {
+                appendFrameNumber(out, frame_number, min_width);
+                i = j;
+                consumed_value = true;
+                continue;
+            }
+
+            out.push_back('%');
+        }
+
+        if (!consumed_value)
+            appendFrameNumber(out, frame_number, 0);
+
+        return out;
+    }
 
     class VideoFrameExtractor::Impl {
     public:
@@ -386,10 +473,8 @@ namespace lfs::io {
                 };
 
                 auto generate_filename = [&](int frame_num) {
-                    char buf[256];
-                    std::snprintf(buf, sizeof(buf), params.filename_pattern.c_str(), frame_num);
                     std::string ext = params.format == ImageFormat::PNG ? ".png" : ".jpg";
-                    return params.output_dir / (std::string(buf) + ext);
+                    return params.output_dir / (formatFrameFilenameStem(params.filename_pattern, frame_num) + ext);
                 };
 
                 auto should_extract_frame = [&](const double frame_time) {
