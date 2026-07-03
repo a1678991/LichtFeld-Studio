@@ -1394,10 +1394,10 @@ namespace lfs::io {
                 options,
                 "COLMAP point cloud parse cancelled",
                 [&](const std::string_view line, size_t) {
-                Point3DData point;
-                parse_point3D_record_line(line, track_mode, point, total_track_elements);
-                points.push_back(std::move(point));
-            });
+                    Point3DData point;
+                    parse_point3D_record_line(line, track_mode, point, total_track_elements);
+                    points.push_back(std::move(point));
+                });
         } else {
             struct RecordChunkResult {
                 std::vector<Point3DData> points;
@@ -1417,10 +1417,10 @@ namespace lfs::io {
                     options,
                     "COLMAP point cloud parse cancelled",
                     [&](const std::string_view line, size_t) {
-                    Point3DData point;
-                    parse_point3D_record_line(line, track_mode, point, result.track_elements);
-                    result.points.push_back(std::move(point));
-                });
+                        Point3DData point;
+                        parse_point3D_record_line(line, track_mode, point, result.track_elements);
+                        result.points.push_back(std::move(point));
+                    });
             });
 
             size_t total_points = 0;
@@ -1477,8 +1477,8 @@ namespace lfs::io {
                 options,
                 "COLMAP point cloud parse cancelled",
                 [&](const std::string_view line, size_t) {
-                parse_point3D_point_cloud_line(line, data.positions, data.colors, data.point_count);
-            });
+                    parse_point3D_point_cloud_line(line, data.positions, data.colors, data.point_count);
+                });
         } else {
             struct PointCloudChunkResult {
                 std::vector<float> positions;
@@ -1501,8 +1501,8 @@ namespace lfs::io {
                     options,
                     "COLMAP point cloud parse cancelled",
                     [&](const std::string_view line, size_t) {
-                    parse_point3D_point_cloud_line(line, result.positions, result.colors, result.point_count);
-                });
+                        parse_point3D_point_cloud_line(line, result.positions, result.colors, result.point_count);
+                    });
             });
 
             size_t total_position_values = 0;
