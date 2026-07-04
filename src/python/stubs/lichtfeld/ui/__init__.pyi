@@ -2467,10 +2467,10 @@ def are_file_associations_registered() -> bool:
     """
 
 def get_pivot_mode() -> int:
-    """Get pivot mode (0=Origin, 1=Bounds)"""
+    """Get pivot mode (0=Origin, 1=Bounds, 2=Individual Origins)"""
 
 def set_pivot_mode(mode: int) -> None:
-    """Set pivot mode (0=Origin, 1=Bounds)"""
+    """Set pivot mode (0=Origin, 1=Bounds, 2=Individual Origins)"""
 
 def get_transform_space() -> int:
     """Get transform space (0=Local, 1=World)"""

@@ -846,6 +846,8 @@
                 </div>
             </div>
 
+            <span class="viewport-transform-skipped hidden"
+                  data-class-hidden="!transform_has_skipped">{{transform_skipped_label}}</span>
         </div>
     </div>
 

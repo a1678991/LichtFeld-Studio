@@ -37,6 +37,10 @@
     color: @{text};
 }
 
+.viewport-transform-skipped {
+    color: @{text_dim};
+}
+
 .viewport-transform-meta__tool,
 .viewport-transform-axis-label {
     color: @{text};

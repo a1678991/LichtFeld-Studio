@@ -64,8 +64,9 @@ namespace lfs::vis {
 
     // Pivot point for transforms
     enum class PivotMode : uint8_t {
-        Origin,      // (0,0,0) in local space
-        BoundsCenter // Bounding box center
+        Origin,       // (0,0,0) in local space; active node origin for multi-selection
+        BoundsCenter, // Bounding box center (combined for multi-selection)
+        Individual    // Each node rotates/scales around its own origin
     };
 
     // Centralized editor state - single source of truth for tool availability

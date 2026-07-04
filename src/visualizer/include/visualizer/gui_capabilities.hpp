@@ -39,6 +39,8 @@ namespace lfs::vis::cap {
         std::vector<std::string> node_names;
         glm::vec3 local_center{0.0f};
         glm::vec3 world_center{0.0f};
+        size_t skipped_locked = 0;
+        size_t skipped_untransformable = 0;
     };
 
     struct LFS_VIS_API SelectionSnapshot {
@@ -117,16 +119,21 @@ namespace lfs::vis::cap {
         const std::vector<std::string>& targets,
         const glm::vec3& value,
         std::string_view undo_label = "transform.translate");
+    // Without pivot_world, each node rotates/scales around its own origin
+    // ("individual origins"); with pivot_world, around the common world pivot
+    // (the gizmo convention).
     [[nodiscard]] LFS_VIS_API std::expected<void, std::string> rotateNodes(
         SceneManager& scene_manager,
         const std::vector<std::string>& targets,
         const glm::vec3& value,
-        std::string_view undo_label = "transform.rotate");
+        std::string_view undo_label = "transform.rotate",
+        std::optional<glm::vec3> pivot_world = std::nullopt);
     [[nodiscard]] LFS_VIS_API std::expected<void, std::string> scaleNodes(
         SceneManager& scene_manager,
         const std::vector<std::string>& targets,
         const glm::vec3& value,
-        std::string_view undo_label = "transform.scale");
+        std::string_view undo_label = "transform.scale",
+        std::optional<glm::vec3> pivot_world = std::nullopt);
     [[nodiscard]] LFS_VIS_API std::expected<size_t, std::string> bakeNodeTransforms(
         SceneManager& scene_manager,
         const std::vector<std::string>& targets,

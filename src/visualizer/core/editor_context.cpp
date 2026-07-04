@@ -122,8 +122,7 @@ namespace lfs::vis {
                 }
             }
 
-            has_editable_transform_selection_ =
-                has_editable_transform_target && !found_locked && !found_untransformable;
+            has_editable_transform_selection_ = has_editable_transform_target;
             if (!has_editable_transform_selection_) {
                 transform_selection_error_ =
                     formatTransformSelectionError(has_editable_transform_target,

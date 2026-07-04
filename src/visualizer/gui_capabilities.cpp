@@ -7,6 +7,7 @@
 #include "visualizer/gui_capabilities.hpp"
 
 #include "core/events.hpp"
+#include "core/logger.hpp"
 #include "core/mesh_data.hpp"
 #include "core/point_cloud.hpp"
 #include "core/splat_data_transform.hpp"
@@ -40,8 +41,8 @@ namespace lfs::vis::cap {
         struct TransformTargetSelection {
             std::vector<std::string> requested_names;
             std::vector<std::string> editable_names;
-            bool found_locked = false;
-            bool found_untransformable = false;
+            size_t skipped_locked = 0;
+            size_t skipped_untransformable = 0;
         };
 
         constexpr float kTransformEpsilon = 1e-6f;
@@ -73,6 +74,28 @@ namespace lfs::vis::cap {
                    std::abs(q.x) > kTransformEpsilon ||
                    std::abs(q.y) > kTransformEpsilon ||
                    std::abs(q.z) > kTransformEpsilon;
+        }
+
+        [[nodiscard]] bool has_significant_anisotropic_scale(const glm::mat4& transform) {
+            const glm::vec3 scale(glm::length(glm::vec3(transform[0])),
+                                  glm::length(glm::vec3(transform[1])),
+                                  glm::length(glm::vec3(transform[2])));
+            const float max_scale = std::max({scale.x, scale.y, scale.z});
+            const float min_scale = std::min({scale.x, scale.y, scale.z});
+            if (max_scale <= kTransformEpsilon)
+                return false;
+            constexpr float RELATIVE_TOLERANCE = 1e-3f;
+            return (max_scale - min_scale) / max_scale > RELATIVE_TOLERANCE;
+        }
+
+        [[nodiscard]] bool has_shear(const glm::mat4& transform) {
+            const glm::vec3 c0 = glm::normalize(glm::vec3(transform[0]));
+            const glm::vec3 c1 = glm::normalize(glm::vec3(transform[1]));
+            const glm::vec3 c2 = glm::normalize(glm::vec3(transform[2]));
+            constexpr float ORTHOGONALITY_TOLERANCE = 1e-3f;
+            return std::abs(glm::dot(c0, c1)) > ORTHOGONALITY_TOLERANCE ||
+                   std::abs(glm::dot(c1, c2)) > ORTHOGONALITY_TOLERANCE ||
+                   std::abs(glm::dot(c2, c0)) > ORTHOGONALITY_TOLERANCE;
         }
 
         [[nodiscard]] bool is_float_nx3(const core::Tensor& tensor) {
@@ -310,12 +333,12 @@ namespace lfs::vis::cap {
                     return std::unexpected("Node not found: " + name);
 
                 if (!isTransformableNodeType(node->type)) {
-                    selection.found_untransformable = true;
+                    ++selection.skipped_untransformable;
                     continue;
                 }
 
                 if (static_cast<bool>(node->locked)) {
-                    selection.found_locked = true;
+                    ++selection.skipped_locked;
                     continue;
                 }
 
@@ -328,29 +351,32 @@ namespace lfs::vis::cap {
         std::string format_transform_target_error(const TransformTargetSelection& selection,
                                                   const std::optional<std::string>& requested_node,
                                                   const TransformTargetPolicy policy) {
+            const bool found_locked = selection.skipped_locked > 0;
+            const bool found_untransformable = selection.skipped_untransformable > 0;
+
             if (requested_node) {
-                if (selection.found_locked)
+                if (found_locked)
                     return "Node is locked: " + *requested_node;
-                if (selection.found_untransformable)
+                if (found_untransformable)
                     return "Node cannot be transformed: " + *requested_node;
             }
 
             if (policy == TransformTargetPolicy::RequireAllEditable) {
                 const bool has_editable = !selection.editable_names.empty();
-                if (selection.found_locked && selection.found_untransformable)
+                if (found_locked && found_untransformable)
                     return "selection contains locked or unsupported nodes";
-                if (selection.found_locked)
+                if (found_locked)
                     return has_editable ? "selection contains locked nodes" : "selection is locked";
-                if (selection.found_untransformable)
+                if (found_untransformable)
                     return has_editable ? "selection contains unsupported nodes" : "select parent node";
                 return "No transform targets provided";
             }
 
-            if (selection.found_locked && selection.found_untransformable)
+            if (found_locked && found_untransformable)
                 return "No editable transformable nodes selected";
-            if (selection.found_locked)
+            if (found_locked)
                 return "No editable nodes selected";
-            if (selection.found_untransformable)
+            if (found_untransformable)
                 return "Selected nodes cannot be transformed";
             return "No transform targets provided";
         }
@@ -442,6 +468,10 @@ namespace lfs::vis::cap {
     TransformComponents decomposeTransform(const glm::mat4& matrix) {
         TransformComponents result;
         result.translation = glm::vec3(matrix[3]);
+
+        if (has_shear(matrix)) {
+            LOG_WARN("Decomposing sheared transform to TRS: shear component will be dropped");
+        }
 
         glm::vec3 col0 = glm::vec3(matrix[0]);
         glm::vec3 col1 = glm::vec3(matrix[1]);
@@ -574,6 +604,8 @@ namespace lfs::vis::cap {
             .node_names = std::move(filtered->editable_names),
             .local_center = local_center,
             .world_center = world_center,
+            .skipped_locked = filtered->skipped_locked,
+            .skipped_untransformable = filtered->skipped_untransformable,
         };
     }
 
@@ -591,6 +623,7 @@ namespace lfs::vis::cap {
         auto entry = std::make_unique<vis::op::SceneSnapshot>(scene_manager, std::string(undo_label));
         entry->captureTransforms(targets);
 
+        const core::Scene::Transaction txn(scene_manager.getScene());
         for (const auto& name : targets) {
             const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
             if (!world_transform)
@@ -623,6 +656,7 @@ namespace lfs::vis::cap {
         auto entry = std::make_unique<vis::op::SceneSnapshot>(scene_manager, std::string(undo_label));
         entry->captureTransforms(targets);
 
+        const core::Scene::Transaction txn(scene_manager.getScene());
         for (const auto& name : targets)
             scene_manager.setNodeTransform(name, transform);
 
@@ -641,6 +675,7 @@ namespace lfs::vis::cap {
         auto entry = std::make_unique<vis::op::SceneSnapshot>(scene_manager, std::string(undo_label));
         entry->captureTransforms(targets);
 
+        const core::Scene::Transaction txn(scene_manager.getScene());
         for (const auto& name : targets) {
             const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
             if (!world_transform)
@@ -660,7 +695,8 @@ namespace lfs::vis::cap {
     std::expected<void, std::string> rotateNodes(SceneManager& scene_manager,
                                                  const std::vector<std::string>& targets,
                                                  const glm::vec3& value,
-                                                 const std::string_view undo_label) {
+                                                 const std::string_view undo_label,
+                                                 const std::optional<glm::vec3> pivot_world) {
         if (targets.empty())
             return std::unexpected("No transform targets provided");
 
@@ -668,16 +704,17 @@ namespace lfs::vis::cap {
         entry->captureTransforms(targets);
 
         const glm::mat4 rotation_delta = glm::eulerAngleXYZ(value.x, value.y, value.z);
+        const core::Scene::Transaction txn(scene_manager.getScene());
         for (const auto& name : targets) {
             const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
             if (!world_transform)
                 return std::unexpected("Node not found: " + name);
 
-            glm::mat4 rotated_world = *world_transform;
-            const glm::mat3 rotated_basis = glm::mat3(rotation_delta) * glm::mat3(*world_transform);
-            rotated_world[0] = glm::vec4(rotated_basis[0], 0.0f);
-            rotated_world[1] = glm::vec4(rotated_basis[1], 0.0f);
-            rotated_world[2] = glm::vec4(rotated_basis[2], 0.0f);
+            const glm::vec3 pivot = pivot_world.value_or(glm::vec3((*world_transform)[3]));
+            const glm::mat4 rotated_world = glm::translate(glm::mat4(1.0f), pivot) *
+                                            rotation_delta *
+                                            glm::translate(glm::mat4(1.0f), -pivot) *
+                                            (*world_transform);
             if (auto result = set_visualizer_world_transform(scene_manager, name, rotated_world); !result)
                 return result;
         }
@@ -690,13 +727,15 @@ namespace lfs::vis::cap {
     std::expected<void, std::string> scaleNodes(SceneManager& scene_manager,
                                                 const std::vector<std::string>& targets,
                                                 const glm::vec3& value,
-                                                const std::string_view undo_label) {
+                                                const std::string_view undo_label,
+                                                const std::optional<glm::vec3> pivot_world) {
         if (targets.empty())
             return std::unexpected("No transform targets provided");
 
         auto entry = std::make_unique<vis::op::SceneSnapshot>(scene_manager, std::string(undo_label));
         entry->captureTransforms(targets);
 
+        const core::Scene::Transaction txn(scene_manager.getScene());
         for (const auto& name : targets) {
             const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
             if (!world_transform)
@@ -704,6 +743,9 @@ namespace lfs::vis::cap {
 
             auto components = decomposeTransform(*world_transform);
             components.scale *= value;
+            if (pivot_world) {
+                components.translation = *pivot_world + value * (components.translation - *pivot_world);
+            }
             if (auto result = set_visualizer_world_transform(scene_manager, name, composeTransform(components)); !result)
                 return result;
         }
@@ -736,6 +778,12 @@ namespace lfs::vis::cap {
 
             if (node->model && node->model->get_max_sh_degree() > 3 && has_significant_rotation(local_transform)) {
                 return std::unexpected("Cannot bake rotated SH degree > 3 splat node: " + name);
+            }
+            if (node->model && has_significant_anisotropic_scale(local_transform)) {
+                return std::unexpected("Cannot bake non-uniform scale into splat node (per-splat scales are isotropic): " + name);
+            }
+            if (node->model && has_shear(local_transform)) {
+                return std::unexpected("Cannot bake sheared transform into splat node: " + name);
             }
 
             if (std::ranges::find(bake_names, name) == bake_names.end())

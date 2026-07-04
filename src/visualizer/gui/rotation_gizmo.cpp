@@ -642,6 +642,7 @@ namespace lfs::vis::gui {
         if (g_active.active && g_active.id == config.id) {
             result.active = true;
             result.active_axis = g_active.axis;
+            result.axis_world = g_active.axis_world;
             float absolute_angle = 0.0f;
             if (rotationAngle(drag_config, pivot_screen, mouse, absolute_angle)) {
                 const float distance_to_ring = activeRingDistance(mouse, pivot_screen, ring_radius_px, rings);
@@ -663,6 +664,7 @@ namespace lfs::vis::gui {
                     }
                 }
             }
+            result.total_angle = g_active.applied_angle;
         }
 
         result.hovered_axis = hovered_axis;

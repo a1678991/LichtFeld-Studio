@@ -806,6 +806,18 @@ body {
     display: none;
 }
 
+.viewport-transform-skipped {
+    pointer-events: none;
+    padding: 2dp 10dp 4dp 10dp;
+    font-size: 10dp;
+    line-height: 13dp;
+    white-space: nowrap;
+}
+
+.viewport-transform-skipped.hidden {
+    display: none;
+}
+
 .viewport-transform-fields {
     min-width: 0;
     display: flex;

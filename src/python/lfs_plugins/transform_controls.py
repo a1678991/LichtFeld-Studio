@@ -43,10 +43,20 @@ _STEP_CONFIG = {
 
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 _NUMERIC_TRANSFORM_TOOL_IDS = ("builtin.translate", "builtin.rotate", "builtin.scale")
+_TRANSFORMABLE_NODE_TYPE_NAMES = {
+    "DATASET",
+    "GROUP",
+    "SPLAT",
+    "POINTCLOUD",
+    "CROPBOX",
+    "ELLIPSOID",
+    "MESH",
+}
 _SPACE_LOCAL = 0
 _SPACE_WORLD = 1
 _PIVOT_ORIGIN = 0
 _PIVOT_BOUNDS = 1
+_PIVOT_INDIVIDUAL = 2
 _MISSING = object()
 
 
@@ -106,6 +116,46 @@ def _is_identity_transform(transform) -> bool:
     return all(abs(float(value) - identity[i]) <= 1e-6 for i, value in enumerate(transform))
 
 
+def _node_type_name(node) -> str:
+    node_type = getattr(node, "type", None)
+    name = getattr(node_type, "name", None)
+    if name:
+        return str(name)
+    return str(node_type).rsplit(".", 1)[-1]
+
+
+def _editable_transform_node_names(names):
+    get_scene = getattr(lf, "get_scene", None)
+    if not callable(get_scene):
+        return []
+
+    try:
+        scene = get_scene()
+    except Exception:
+        return []
+
+    if scene is None:
+        return []
+
+    editable = []
+    for name in names:
+        try:
+            node = scene.get_node(name)
+        except Exception:
+            continue
+        if node is None:
+            continue
+        try:
+            if bool(getattr(node, "locked", False)):
+                continue
+        except Exception:
+            continue
+        if _node_type_name(node) not in _TRANSFORMABLE_NODE_TYPE_NAMES:
+            continue
+        editable.append(name)
+    return editable
+
+
 class TransformPanelState:
     def __init__(self):
         self.editing_active = False
@@ -161,6 +211,9 @@ class TransformControlsController:
         self._escape_revert = w.EscapeRevertController()
         self._last_state_key = None
         self._force_dirty = False
+        self._skipped_targets = 0
+        self._skipped_locked_targets = 0
+        self._skipped_unsupported_targets = 0
 
     def bind_model(self, model):
         model.bind_func("transform_tool_label", self._tool_label)
@@ -193,6 +246,8 @@ class TransformControlsController:
         model.bind_func("transform_can_bake", self._can_bake_transform)
         model.bind_func("transform_reset_opacity", lambda: "1" if self._can_reset_transform() else "0.22")
         model.bind_func("transform_bake_opacity", lambda: "1" if self._can_bake_transform() else "0.22")
+        model.bind_func("transform_has_skipped", lambda: self._skipped_targets > 0)
+        model.bind_func("transform_skipped_label", self._skipped_label)
         for axis in ("x", "y", "z"):
             idx = _AXIS_INDEX[axis]
             model.bind(
@@ -284,6 +339,14 @@ class TransformControlsController:
         self._selected = lf.get_selected_node_names() or []
         self._transform_space = self._current_transform_space()
         self._pivot_mode = self._current_pivot_mode()
+        try:
+            self._skipped_locked_targets = int(_native_store_value("transform_skipped_locked_targets", 0) or 0)
+            self._skipped_unsupported_targets = int(_native_store_value("transform_skipped_unsupported_targets", 0) or 0)
+            self._skipped_targets = self._skipped_locked_targets + self._skipped_unsupported_targets
+        except Exception:
+            self._skipped_targets = 0
+            self._skipped_locked_targets = 0
+            self._skipped_unsupported_targets = 0
 
         if self._active_tool != prev_tool or self._transform_space != prev_space:
             self._commit_active_edit()
@@ -455,6 +518,9 @@ class TransformControlsController:
             int(self._can_reset_transform()),
             int(self._can_bake_transform()),
             self._transform_action_opacity_cache(),
+            self._skipped_targets,
+            self._skipped_locked_targets,
+            self._skipped_unsupported_targets,
         )
 
     def _dirty_if_display_state_changed(self, dirty=False):
@@ -489,10 +555,35 @@ class TransformControlsController:
         self._handle.dirty("transform_can_bake")
         self._handle.dirty("transform_reset_opacity")
         self._handle.dirty("transform_bake_opacity")
+        self._handle.dirty("transform_has_skipped")
+        self._handle.dirty("transform_skipped_label")
+
+    def _skipped_label(self):
+        if self._skipped_targets <= 0:
+            return ""
+        if self._skipped_locked_targets > 0 and self._skipped_unsupported_targets > 0:
+            return _format_ui_label(
+                "transform.skipped_noneditable",
+                "%d non-editable node(s) skipped",
+                self._skipped_targets,
+            )
+        if self._skipped_unsupported_targets > 0:
+            return _format_ui_label(
+                "transform.skipped_unsupported",
+                "%d unsupported node(s) skipped",
+                self._skipped_unsupported_targets,
+            )
+        return _format_ui_label(
+            "transform.skipped_locked",
+            "%d locked node(s) skipped",
+            self._skipped_locked_targets,
+        )
 
     def _begin_edit(self):
         if len(self._selected) == 1:
             node_name = self._selected[0]
+            if node_name not in _editable_transform_node_names(self._selected):
+                return
             transform = lf.get_node_transform(node_name)
             if transform is None:
                 return
@@ -502,13 +593,16 @@ class TransformControlsController:
         else:
             if self._state.multi_editing_active:
                 return
+            editable_names = _editable_transform_node_names(self._selected)
+            if not editable_names:
+                return
             self._state.multi_editing_active = True
             center = lf.get_selection_visualizer_world_center()
             self._state.pivot_world = list(center) if center else [0.0, 0.0, 0.0]
-            self._state.multi_node_names = list(self._selected)
+            self._state.multi_node_names = editable_names
             self._state.multi_transforms_before = []
             self._state.multi_visualizer_world_transforms_before = []
-            for name in self._selected:
+            for name in editable_names:
                 transform = lf.get_node_transform(name)
                 if transform is not None:
                     self._state.multi_transforms_before.append(transform)
@@ -568,6 +662,8 @@ class TransformControlsController:
             return
 
         node_name = self._selected[0]
+        if node_name not in _editable_transform_node_names([node_name]):
+            return
 
         # Always read current transform to ensure we have up-to-date translation and scale
         current_transform = self._single_display_transform(node_name)
@@ -591,6 +687,16 @@ class TransformControlsController:
             new_decomp = lf.decompose_transform(new_transform)
             self._state.euler_display_rotation = list(new_decomp["rotation_quat"])  # COPY
 
+    def _multi_orbit_pivot(self):
+        if self._pivot_mode == _PIVOT_ORIGIN:
+            get_active = getattr(lf, "get_selected_node_name", None)
+            active = get_active() if callable(get_active) else None
+            if active in self._state.multi_node_names:
+                idx = self._state.multi_node_names.index(active)
+                decomp = lf.decompose_transform(self._state.multi_visualizer_world_transforms_before[idx])
+                return list(decomp["translation"])
+        return self._state.pivot_world
+
     def _apply_multi_transform(self, tool: str):
         if (
             not self._state.multi_node_names
@@ -599,6 +705,8 @@ class TransformControlsController:
             return
 
         pivot = self._state.pivot_world
+        orbit_pivot = self._multi_orbit_pivot()
+        individual_pivots = self._pivot_mode == _PIVOT_INDIVIDUAL
 
         for i, name in enumerate(self._state.multi_node_names):
             original = self._state.multi_visualizer_world_transforms_before[i]
@@ -619,22 +727,24 @@ class TransformControlsController:
                 r10, r11, r12 = sx * sy * cz + cx * sz, -sx * sy * sz + cx * cz, -sx * cy
                 r20, r21, r22 = -cx * sy * cz + sx * sz, cx * sy * sz + sx * cz, cx * cy
 
-                rel = [pos[j] - pivot[j] for j in range(3)]
+                node_pivot = pos if individual_pivots else orbit_pivot
+                rel = [pos[j] - node_pivot[j] for j in range(3)]
                 new_rel = [
                     r00 * rel[0] + r01 * rel[1] + r02 * rel[2],
                     r10 * rel[0] + r11 * rel[1] + r12 * rel[2],
                     r20 * rel[0] + r21 * rel[1] + r22 * rel[2],
                 ]
-                new_pos = [pivot[j] + new_rel[j] for j in range(3)]
+                new_pos = [node_pivot[j] + new_rel[j] for j in range(3)]
                 orig_euler = list(decomp["rotation_euler_deg"])
                 new_euler = [orig_euler[j] + self._state.display_euler[j] for j in range(3)]
                 new_transform = lf.compose_transform(new_pos, new_euler, decomp["scale"])
                 lf.set_node_visualizer_world_transform(name, new_transform)
 
             elif tool == "builtin.scale":
-                rel = [pos[j] - pivot[j] for j in range(3)]
+                node_pivot = pos if individual_pivots else orbit_pivot
+                rel = [pos[j] - node_pivot[j] for j in range(3)]
                 new_rel = [rel[j] * self._state.display_scale[j] for j in range(3)]
-                new_pos = [pivot[j] + new_rel[j] for j in range(3)]
+                new_pos = [node_pivot[j] + new_rel[j] for j in range(3)]
                 orig_scale = list(decomp["scale"])
                 new_scale = [orig_scale[j] * self._state.display_scale[j] for j in range(3)]
                 new_transform = lf.compose_transform(new_pos, decomp["rotation_euler_deg"], new_scale)
@@ -645,6 +755,8 @@ class TransformControlsController:
             return False
 
         if len(self._selected) == 1:
+            if not _editable_transform_node_names(self._selected):
+                return False
             transform = lf.get_node_transform(self._selected[0])
             return not _is_identity_transform(transform)
 
@@ -652,7 +764,7 @@ class TransformControlsController:
         if not selected:
             return False
 
-        for name in selected:
+        for name in _editable_transform_node_names(selected):
             transform = lf.get_node_transform(name)
             if not _is_identity_transform(transform):
                 return True
@@ -876,6 +988,8 @@ class TransformControlsController:
             return
 
         node_name = self._selected[0]
+        if node_name not in _editable_transform_node_names([node_name]):
+            return
         current = lf.get_node_transform(node_name)
         if current is None:
             return
@@ -894,7 +1008,7 @@ class TransformControlsController:
         if self._state.multi_editing_active:
             self._commit_multi_edit()
 
-        selected = lf.get_selected_node_names()
+        selected = _editable_transform_node_names(lf.get_selected_node_names())
         if not selected:
             return
 

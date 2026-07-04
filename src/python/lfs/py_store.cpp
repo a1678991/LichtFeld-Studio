@@ -278,6 +278,10 @@ namespace lfs::python {
                 store.transform_space.set(nb::cast<int>(value));
             else if (field == "pivot_mode")
                 store.pivot_mode.set(nb::cast<int>(value));
+            else if (field == "transform_skipped_locked_targets")
+                store.transform_skipped_locked_targets.set(nb::cast<int>(value));
+            else if (field == "transform_skipped_unsupported_targets")
+                store.transform_skipped_unsupported_targets.set(nb::cast<int>(value));
             else if (field == "import_overlay_state")
                 store.import_overlay_state.set(import_overlay_state_from_object(value));
             else if (field == "video_export_overlay_state")
@@ -336,6 +340,10 @@ namespace lfs::python {
                 return nb::cast(store.transform_space.get());
             if (field == "pivot_mode")
                 return nb::cast(store.pivot_mode.get());
+            if (field == "transform_skipped_locked_targets")
+                return nb::cast(store.transform_skipped_locked_targets.get());
+            if (field == "transform_skipped_unsupported_targets")
+                return nb::cast(store.transform_skipped_unsupported_targets.get());
             if (field == "import_overlay_state")
                 return import_overlay_state_to_dict(store.import_overlay_state.get());
             if (field == "video_export_overlay_state")
@@ -393,6 +401,10 @@ namespace lfs::python {
                 return subscribe_observable(store.transform_space, std::move(callback));
             if (field == "pivot_mode")
                 return subscribe_observable(store.pivot_mode, std::move(callback));
+            if (field == "transform_skipped_locked_targets")
+                return subscribe_observable(store.transform_skipped_locked_targets, std::move(callback));
+            if (field == "transform_skipped_unsupported_targets")
+                return subscribe_observable(store.transform_skipped_unsupported_targets, std::move(callback));
             if (field == "import_overlay_state")
                 return subscribe_observable_as(
                     store.import_overlay_state, std::move(callback), import_overlay_state_to_dict);

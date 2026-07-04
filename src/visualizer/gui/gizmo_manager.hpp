@@ -109,11 +109,34 @@ namespace lfs::vis {
             bool show_node_gizmo_ = false;
             GizmoOperation node_gizmo_operation_ = GizmoOperation::Translate;
             bool node_gizmo_active_ = false;
-            std::vector<std::string> node_gizmo_node_names_;
-            std::vector<glm::mat4> node_transforms_before_drag_;
-            std::vector<glm::mat4> node_original_visualizer_world_transforms_;
+
+            struct NodeDragTarget {
+                core::NodeId id = core::NULL_NODE;
+                std::string name;
+                glm::mat4 local_before{1.0f};
+                glm::mat4 world_before{1.0f};
+                glm::vec3 pivot_world{0.0f};
+                bool has_crop_overlay = false;
+            };
+            std::vector<NodeDragTarget> node_drag_targets_;
+            bool node_drag_has_overlays_ = false;
+
+            // Editable transform targets, resolved lazily and invalidated by
+            // selection/scene events instead of recomputed every frame.
+            struct TransformTargetsCache {
+                bool valid = false;
+                bool resolved = false;
+                uint32_t selection_generation = 0;
+                std::vector<std::string> names;
+                std::vector<core::NodeId> ids;
+                core::NodeId active_id = core::NULL_NODE;
+                glm::vec3 local_center{0.0f};
+                glm::vec3 world_center{0.0f};
+            };
+            TransformTargetsCache targets_cache_;
+
             glm::vec3 gizmo_pivot_{0.0f};
-            glm::mat3 gizmo_cumulative_rotation_{1.0f};
+            glm::mat3 gizmo_axes_{1.0f};
             glm::vec3 gizmo_cumulative_scale_{1.0f};
 
             // Cropbox gizmo
@@ -160,6 +183,9 @@ namespace lfs::vis {
             static constexpr float VIEWPORT_GIZMO_MARGIN_Y = 10.0f;
 
             void triggerCropFlash();
+            void invalidateTransformTargets();
+            [[nodiscard]] const TransformTargetsCache& resolvedTransformTargets();
+            void finishNodeDrag();
 
             // Crop flash effect
             std::chrono::steady_clock::time_point crop_flash_start_;

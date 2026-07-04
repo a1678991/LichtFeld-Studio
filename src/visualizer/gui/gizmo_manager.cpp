@@ -316,10 +316,144 @@ namespace lfs::vis::gui {
                              glm::length(glm::vec3(m[2])));
         }
 
+        [[nodiscard]] bool basisIsShearFree(const glm::mat3& basis) {
+            constexpr float EPSILON = 1e-4f;
+            const glm::vec3 c0 = glm::normalize(basis[0]);
+            const glm::vec3 c1 = glm::normalize(basis[1]);
+            const glm::vec3 c2 = glm::normalize(basis[2]);
+            return std::abs(glm::dot(c0, c1)) < EPSILON &&
+                   std::abs(glm::dot(c1, c2)) < EPSILON &&
+                   std::abs(glm::dot(c2, c0)) < EPSILON;
+        }
+
+        // Scale a world transform about a common pivot along the gizmo axes. Positions
+        // always take the exact per-axis scale; the node basis takes it only when the
+        // result stays shear-free (TRS-decomposable), otherwise the uniform volume
+        // equivalent — shear cannot be represented by splat bake or typed TRS edits.
+        [[nodiscard]] glm::mat4 scaleWorldAboutPivotShearFree(const glm::mat4& world_before,
+                                                              const glm::vec3& pivot,
+                                                              const glm::mat3& axes,
+                                                              const glm::vec3& scale) {
+            const glm::mat3 scale_in_axes =
+                axes * glm::mat3(glm::scale(glm::mat4(1.0f), scale)) * glm::transpose(axes);
+            const glm::mat3 basis_before(world_before);
+            glm::mat3 new_basis = scale_in_axes * basis_before;
+            if (!basisIsShearFree(new_basis)) {
+                const float uniform = std::cbrt(std::abs(scale.x * scale.y * scale.z));
+                new_basis = basis_before * uniform;
+            }
+            const glm::vec3 new_position = pivot + scale_in_axes * (glm::vec3(world_before[3]) - pivot);
+            glm::mat4 result(1.0f);
+            result[0] = glm::vec4(new_basis[0], 0.0f);
+            result[1] = glm::vec4(new_basis[1], 0.0f);
+            result[2] = glm::vec4(new_basis[2], 0.0f);
+            result[3] = glm::vec4(new_position, 1.0f);
+            return result;
+        }
+
     } // namespace
 
     GizmoManager::GizmoManager(VisualizerImpl* viewer)
         : viewer_(viewer) {
+    }
+
+    void GizmoManager::invalidateTransformTargets() {
+        if (node_gizmo_active_)
+            return;
+        targets_cache_.valid = false;
+        app_store().transform_skipped_locked_targets.set(0);
+        app_store().transform_skipped_unsupported_targets.set(0);
+    }
+
+    // Commits and clears an in-flight node drag. Also the recovery path when a drag
+    // is aborted externally (tool switch, selection change, node deletion) — without
+    // it, node_gizmo_active_ stays set and suppresses target invalidation.
+    void GizmoManager::finishNodeDrag() {
+        if (!node_gizmo_active_)
+            return;
+        node_gizmo_active_ = false;
+        node_bounds_scale_active_ = false;
+        node_bounds_cache_valid_ = false;
+
+        if (auto* const rm = viewer_ ? viewer_->getRenderingManager() : nullptr) {
+            rm->setCropboxGizmoActive(false);
+            rm->setEllipsoidGizmoActive(false);
+        }
+
+        if (auto* const sm = viewer_ ? viewer_->getSceneManager() : nullptr) {
+            const auto& scene = sm->getScene();
+            bool any_changed = false;
+            for (const auto& target : node_drag_targets_) {
+                const auto* node = scene.getNodeById(target.id);
+                if (node && node->local_transform.get() != target.local_before) {
+                    any_changed = true;
+                    break;
+                }
+            }
+
+            if (any_changed) {
+                std::vector<std::string> node_names;
+                std::vector<glm::mat4> old_transforms;
+                node_names.reserve(node_drag_targets_.size());
+                old_transforms.reserve(node_drag_targets_.size());
+                for (const auto& target : node_drag_targets_) {
+                    if (!scene.getNodeById(target.id))
+                        continue;
+                    node_names.push_back(target.name);
+                    old_transforms.push_back(target.local_before);
+                }
+                op::OperatorProperties props;
+                props.set("node_names", node_names);
+                props.set("old_transforms", old_transforms);
+                op::operators().invoke(op::BuiltinOp::TransformApplyBatch, &props);
+            }
+        }
+
+        node_drag_targets_.clear();
+        node_drag_has_overlays_ = false;
+        targets_cache_.valid = false;
+    }
+
+    const GizmoManager::TransformTargetsCache& GizmoManager::resolvedTransformTargets() {
+        auto* const sm = viewer_ ? viewer_->getSceneManager() : nullptr;
+        const uint32_t selection_generation = sm ? sm->selectionState().generation() : 0;
+        if (targets_cache_.valid && targets_cache_.selection_generation == selection_generation)
+            return targets_cache_;
+
+        targets_cache_ = {};
+        targets_cache_.valid = true;
+        targets_cache_.selection_generation = selection_generation;
+
+        if (!sm)
+            return targets_cache_;
+
+        const auto resolved = cap::resolveEditableTransformSelection(
+            *sm, std::nullopt, cap::TransformTargetPolicy::AllowEditableSubset);
+        if (!resolved) {
+            app_store().transform_skipped_locked_targets.set(0);
+            app_store().transform_skipped_unsupported_targets.set(0);
+            return targets_cache_;
+        }
+
+        const auto& scene = sm->getScene();
+        targets_cache_.resolved = true;
+        targets_cache_.names = resolved->node_names;
+        targets_cache_.ids.reserve(targets_cache_.names.size());
+        for (const auto& name : targets_cache_.names) {
+            const auto* node = scene.getNode(name);
+            targets_cache_.ids.push_back(node ? node->id : core::NULL_NODE);
+        }
+        targets_cache_.active_id = sm->getActiveNodeId();
+        if (std::find(targets_cache_.ids.begin(), targets_cache_.ids.end(), targets_cache_.active_id) ==
+            targets_cache_.ids.end()) {
+            targets_cache_.active_id = targets_cache_.ids.empty() ? core::NULL_NODE : targets_cache_.ids.front();
+        }
+        targets_cache_.local_center = resolved->local_center;
+        targets_cache_.world_center = resolved->world_center;
+
+        app_store().transform_skipped_locked_targets.set(static_cast<int>(resolved->skipped_locked));
+        app_store().transform_skipped_unsupported_targets.set(static_cast<int>(resolved->skipped_untransformable));
+        return targets_cache_;
     }
 
     bool GizmoManager::isCropToolActive() const {
@@ -768,6 +902,7 @@ namespace lfs::vis::gui {
             if (auto* const sm = viewer_->getSceneManager())
                 sm->syncCropBoxToRenderSettings();
             node_bounds_cache_valid_ = false;
+            invalidateTransformTargets();
         });
 
         ui::NodeDeselected::when([this](const auto&) {
@@ -775,10 +910,19 @@ namespace lfs::vis::gui {
             if (auto* const t = viewer_->getAlignTool())
                 t->setEnabled(false);
             node_bounds_cache_valid_ = false;
+            invalidateTransformTargets();
         });
 
-        state::PLYRemoved::when([this](const auto&) { deactivateAllTools(); });
-        state::SceneCleared::when([this](const auto&) { deactivateAllTools(); });
+        state::SceneChanged::when([this](const auto&) { invalidateTransformTargets(); });
+
+        state::PLYRemoved::when([this](const auto&) {
+            deactivateAllTools();
+            invalidateTransformTargets();
+        });
+        state::SceneCleared::when([this](const auto&) {
+            deactivateAllTools();
+            invalidateTransformTargets();
+        });
 
         lfs::core::events::tools::SetToolbarTool::when([this](const auto& e) {
             auto& editor = viewer_->getEditorContext();
@@ -1080,43 +1224,51 @@ namespace lfs::vis::gui {
     }
 
     void GizmoManager::renderNodeTransformGizmo(const UIContext& ctx, const ViewportLayout& viewport) {
-        if (!show_node_gizmo_)
+        if (!show_node_gizmo_) {
+            finishNodeDrag();
             return;
+        }
 
         auto* scene_manager = ctx.viewer->getSceneManager();
-        if (!scene_manager || !scene_manager->hasSelectedNode())
+        if (!scene_manager || !scene_manager->hasSelectedNode()) {
+            finishNodeDrag();
             return;
+        }
 
         const auto selected_type = scene_manager->getSelectedNodeType();
         if (selected_type == core::NodeType::CROPBOX || selected_type == core::NodeType::ELLIPSOID ||
-            selected_type == core::NodeType::KEYFRAME || selected_type == core::NodeType::KEYFRAME_GROUP)
+            selected_type == core::NodeType::KEYFRAME || selected_type == core::NodeType::KEYFRAME_GROUP) {
+            finishNodeDrag();
             return;
+        }
 
-        const auto& scene = scene_manager->getScene();
-        const auto transform_targets = cap::resolveEditableTransformSelection(
-            *scene_manager, std::nullopt, cap::TransformTargetPolicy::RequireAllEditable);
-        if (!transform_targets)
+        auto& scene = scene_manager->getScene();
+        const auto& targets = resolvedTransformTargets();
+        if (!targets.resolved || targets.ids.empty()) {
+            finishNodeDrag();
             return;
+        }
 
-        const auto& target_names = transform_targets->node_names;
         bool any_visible = false;
-        for (const auto& name : target_names) {
-            if (const auto* node = scene.getNode(name)) {
-                if (scene.isNodeEffectivelyVisible(node->id)) {
-                    any_visible = true;
-                    break;
-                }
+        for (const auto id : targets.ids) {
+            if (scene.isNodeEffectivelyVisible(id)) {
+                any_visible = true;
+                break;
             }
         }
-        if (!any_visible)
+        if (!any_visible) {
+            finishNodeDrag();
             return;
+        }
 
         auto* render_manager = ctx.viewer->getRenderingManager();
-        if (!render_manager)
+        if (!render_manager) {
+            finishNodeDrag();
             return;
+        }
 
         const auto& settings = render_manager->getSettings();
-        const bool is_multi_selection = (target_names.size() > 1);
+        const bool is_multi_selection = (targets.ids.size() > 1);
 
         const auto active_panel = resolveActiveGizmoPanel(ctx.viewer, viewport);
         if (!active_panel || !active_panel->valid())
@@ -1128,18 +1280,24 @@ namespace lfs::vis::gui {
         const glm::mat4 projection = lfs::rendering::createProjectionMatrixFromFocal(
             vp_size, settings.focal_length_mm, settings.orthographic, settings.ortho_scale);
 
-        const bool use_world_space = (transform_space_ == TransformSpace::World) || is_multi_selection;
+        const bool use_world_space = (transform_space_ == TransformSpace::World);
+        const bool individual_pivots = is_multi_selection && pivot_mode_ == PivotMode::Individual;
 
-        const glm::vec3 local_pivot = (pivot_mode_ == PivotMode::Origin)
-                                          ? glm::vec3(0.0f)
-                                          : transform_targets->local_center;
+        const auto* active_node = scene.getNodeById(targets.active_id);
+        if (!active_node) {
+            finishNodeDrag();
+            targets_cache_.valid = false;
+            return;
+        }
+
+        const glm::vec3 local_pivot = (pivot_mode_ == PivotMode::BoundsCenter)
+                                          ? targets.local_center
+                                          : glm::vec3(0.0f);
 
         bool has_valid_bounds = false;
         const bool use_bounds_scale = !is_multi_selection && node_gizmo_operation_ == GizmoOperation::Scale;
 
-        const auto* first_node = (!is_multi_selection && !target_names.empty())
-                                     ? scene.getNode(target_names.front())
-                                     : nullptr;
+        const auto* first_node = !is_multi_selection ? scene.getNodeById(targets.ids.front()) : nullptr;
 
         glm::vec3 bounds_min(0.0f), bounds_max(0.0f);
         glm::mat4 world_transform(1.0f);
@@ -1174,14 +1332,19 @@ namespace lfs::vis::gui {
 
         const bool actually_using_bounds = use_bounds_scale && has_valid_bounds;
 
-        const glm::vec3 transform_gizmo_position = (node_gizmo_active_ && !node_bounds_scale_active_)
-                                                       ? gizmo_pivot_
-                                                       : (is_multi_selection
-                                                              ? transform_targets->world_center
-                                                              : (first_node
-                                                                     ? glm::vec3(scene_coords::nodeVisualizerWorldTransform(scene, first_node->id) *
-                                                                                 glm::vec4(local_pivot, 1.0f))
-                                                                     : glm::vec3(0.0f)));
+        glm::vec3 transform_gizmo_position(0.0f);
+        if (node_gizmo_active_ && !node_bounds_scale_active_) {
+            transform_gizmo_position = gizmo_pivot_;
+        } else if (is_multi_selection) {
+            transform_gizmo_position =
+                (pivot_mode_ == PivotMode::Origin)
+                    ? glm::vec3(scene_coords::nodeVisualizerWorldTransform(scene, active_node->id)[3])
+                    : targets.world_center;
+        } else if (first_node) {
+            transform_gizmo_position = glm::vec3(scene_coords::nodeVisualizerWorldTransform(scene, first_node->id) *
+                                                 glm::vec4(local_pivot, 1.0f));
+        }
+
         glm::mat4 transform_gizmo_matrix(1.0f);
         transform_gizmo_matrix[3] = glm::vec4(transform_gizmo_position, 1.0f);
         if (!is_multi_selection) {
@@ -1190,6 +1353,12 @@ namespace lfs::vis::gui {
             transform_gizmo_matrix[0] = glm::vec4(rotation_scale[0], 0.0f);
             transform_gizmo_matrix[1] = glm::vec4(rotation_scale[1], 0.0f);
             transform_gizmo_matrix[2] = glm::vec4(rotation_scale[2], 0.0f);
+        } else if (!use_world_space) {
+            const glm::mat3 active_rotation =
+                extractRotation(scene_coords::nodeVisualizerWorldTransform(scene, active_node->id));
+            transform_gizmo_matrix[0] = glm::vec4(active_rotation[0], 0.0f);
+            transform_gizmo_matrix[1] = glm::vec4(active_rotation[1], 0.0f);
+            transform_gizmo_matrix[2] = glm::vec4(active_rotation[2], 0.0f);
         }
 
         glm::mat4 gizmo_matrix(1.0f);
@@ -1237,12 +1406,13 @@ namespace lfs::vis::gui {
         const bool use_scale_gizmo = node_gizmo_operation_ == GizmoOperation::Scale;
         bool is_using = false;
         bool gizmo_changed = false;
-        glm::mat4 delta_matrix(1.0f);
         bool bounds_result_valid = false;
         bool bounds_gizmo_active = false;
         glm::vec3 bounds_result_center_world(0.0f);
         glm::vec3 bounds_result_local_size(0.0f);
         ScaleGizmoResult scale_result;
+        float rotation_total_angle = 0.0f;
+        glm::vec3 rotation_axis_world(0.0f);
         const bool scale_gizmo_has_priority = use_scale_gizmo && (isScaleGizmoHovered() || isScaleGizmoActive());
 
         if (use_bounds_gizmo) {
@@ -1304,7 +1474,6 @@ namespace lfs::vis::gui {
             const auto translation_result = drawTranslationGizmo(translation_config);
             is_using = translation_result.active;
             gizmo_changed = translation_result.changed;
-            delta_matrix = glm::translate(glm::mat4(1.0f), translation_result.delta_translation);
             if (translation_result.active) {
                 gizmo_matrix[3] =
                     glm::vec4(translation_config.pivot_world + translation_result.total_translation, 1.0f);
@@ -1330,7 +1499,8 @@ namespace lfs::vis::gui {
             const auto rotation_result = drawRotationGizmo(rotation_config);
             is_using = rotation_result.active;
             gizmo_changed = rotation_result.changed;
-            delta_matrix = glm::mat4(rotation_result.delta_rotation);
+            rotation_total_angle = rotation_result.total_angle;
+            rotation_axis_world = rotation_result.axis_world;
             if (rotation_result.hovered || rotation_result.active) {
                 guiFocusState().want_capture_mouse = true;
             }
@@ -1356,7 +1526,6 @@ namespace lfs::vis::gui {
             is_using = is_using || scale_result.active;
             gizmo_changed = gizmo_changed || scale_result.changed;
             if (scale_result.changed) {
-                delta_matrix = glm::scale(glm::mat4(1.0f), scale_result.delta_scale);
                 transform_gizmo_matrix[0] *= scale_result.delta_scale.x;
                 transform_gizmo_matrix[1] *= scale_result.delta_scale.y;
                 transform_gizmo_matrix[2] *= scale_result.delta_scale.z;
@@ -1372,7 +1541,8 @@ namespace lfs::vis::gui {
         if (is_using && !node_gizmo_active_) {
             node_gizmo_active_ = true;
             gizmo_pivot_ = glm::vec3(gizmo_matrix[3]);
-            gizmo_cumulative_rotation_ = glm::mat3(1.0f);
+            gizmo_axes_ = gizmo_uses_local_axes ? userFacingLocalRotation(transform_gizmo_matrix)
+                                                : glm::mat3(1.0f);
             gizmo_cumulative_scale_ = glm::vec3(1.0f);
 
             if (actually_using_bounds && first_node && bounds_gizmo_active) {
@@ -1386,16 +1556,13 @@ namespace lfs::vis::gui {
                 }
             }
 
-            std::unordered_set<core::NodeId> selected_ids;
-            for (const auto& name : target_names) {
-                if (const auto* node = scene.getNode(name)) {
-                    selected_ids.insert(node->id);
-                }
-            }
+            const std::unordered_set<core::NodeId> selected_ids(targets.ids.begin(), targets.ids.end());
 
-            node_gizmo_node_names_.clear();
-            for (const auto& name : target_names) {
-                const auto* node = scene.getNode(name);
+            node_drag_targets_.clear();
+            node_drag_targets_.reserve(targets.ids.size());
+            node_drag_has_overlays_ = false;
+            for (size_t i = 0; i < targets.ids.size(); ++i) {
+                const auto* node = scene.getNodeById(targets.ids[i]);
                 if (!node)
                     continue;
 
@@ -1408,77 +1575,73 @@ namespace lfs::vis::gui {
                     const auto* parent = scene.getNodeById(check_id);
                     check_id = parent ? parent->parent_id : core::NULL_NODE;
                 }
-
-                if (!ancestor_selected) {
-                    node_gizmo_node_names_.push_back(name);
-                }
-            }
-
-            node_transforms_before_drag_.clear();
-            node_original_visualizer_world_transforms_.clear();
-
-            for (const auto& name : node_gizmo_node_names_) {
-                const auto* node = scene.getNode(name);
-                if (!node)
+                if (ancestor_selected)
                     continue;
 
-                const glm::mat4 world_t = scene_coords::nodeVisualizerWorldTransform(scene, node->id);
-                const glm::mat4 local_t = node->local_transform.get();
-                node_transforms_before_drag_.push_back(local_t);
-                node_original_visualizer_world_transforms_.push_back(world_t);
+                NodeDragTarget target;
+                target.id = node->id;
+                target.name = targets.names[i];
+                target.world_before = scene_coords::nodeVisualizerWorldTransform(scene, node->id);
+                target.local_before = node->local_transform.get();
+                target.pivot_world = glm::vec3(target.world_before[3]);
+                target.has_crop_overlay = node->type == core::NodeType::SPLAT &&
+                                          (scene.getCropBoxForSplat(node->id) != core::NULL_NODE ||
+                                           scene.getEllipsoidForSplat(node->id) != core::NULL_NODE);
+                node_drag_has_overlays_ = node_drag_has_overlays_ || target.has_crop_overlay;
+                node_drag_targets_.push_back(std::move(target));
             }
         }
 
-        if (gizmo_changed && is_using) {
-            if (node_gizmo_operation_ == GizmoOperation::Rotate) {
-                const glm::mat3 delta_rot = extractRotation(delta_matrix);
-                gizmo_cumulative_rotation_ = delta_rot * gizmo_cumulative_rotation_;
-                const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), gizmo_pivot_) *
-                                              glm::mat4(gizmo_cumulative_rotation_) *
-                                              glm::translate(glm::mat4(1.0f), -gizmo_pivot_);
-
-                for (size_t i = 0; i < node_gizmo_node_names_.size(); ++i) {
-                    const glm::mat4 new_world_transform = world_delta * node_original_visualizer_world_transforms_[i];
-                    if (const auto new_local_transform =
-                            scene_coords::nodeLocalTransformFromVisualizerWorld(
-                                scene_manager->getScene(),
-                                node_gizmo_node_names_[i],
-                                new_world_transform)) {
-                        scene_manager->setNodeTransform(node_gizmo_node_names_[i], *new_local_transform);
+        if (gizmo_changed && is_using && !node_drag_targets_.empty()) {
+            const core::Scene::Transaction txn(scene);
+            if (node_gizmo_operation_ == GizmoOperation::Rotate &&
+                glm::dot(rotation_axis_world, rotation_axis_world) > 0.0f) {
+                const glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), rotation_total_angle, rotation_axis_world);
+                for (const auto& target : node_drag_targets_) {
+                    const glm::vec3& pivot = individual_pivots ? target.pivot_world : gizmo_pivot_;
+                    const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), pivot) *
+                                                  rotation *
+                                                  glm::translate(glm::mat4(1.0f), -pivot);
+                    if (const auto new_local_transform = scene_coords::nodeLocalTransformFromVisualizerWorld(
+                            scene, target.id, world_delta * target.world_before)) {
+                        scene.setNodeTransform(target.id, *new_local_transform);
                     }
                 }
             } else if (node_gizmo_operation_ == GizmoOperation::Scale &&
                        !node_bounds_scale_active_ &&
                        (is_multi_selection || use_world_space)) {
-                gizmo_cumulative_scale_ *= extractScale(delta_matrix);
-                const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), gizmo_pivot_) *
-                                              glm::scale(glm::mat4(1.0f), gizmo_cumulative_scale_) *
-                                              glm::translate(glm::mat4(1.0f), -gizmo_pivot_);
-
-                for (size_t i = 0; i < node_gizmo_node_names_.size(); ++i) {
-                    const glm::mat4 new_world_transform = world_delta * node_original_visualizer_world_transforms_[i];
-                    if (const auto new_local_transform =
-                            scene_coords::nodeLocalTransformFromVisualizerWorld(
-                                scene_manager->getScene(),
-                                node_gizmo_node_names_[i],
-                                new_world_transform)) {
-                        scene_manager->setNodeTransform(node_gizmo_node_names_[i], *new_local_transform);
+                gizmo_cumulative_scale_ = scale_result.total_scale;
+                for (const auto& target : node_drag_targets_) {
+                    if (individual_pivots) {
+                        if (use_world_space) {
+                            if (const auto new_local_transform = scene_coords::nodeLocalTransformFromVisualizerWorld(
+                                    scene,
+                                    target.id,
+                                    scaleWorldAboutPivotShearFree(target.world_before, target.pivot_world,
+                                                                  gizmo_axes_, scale_result.total_scale))) {
+                                scene.setNodeTransform(target.id, *new_local_transform);
+                            }
+                        } else {
+                            scene.setNodeTransform(
+                                target.id,
+                                target.local_before * glm::scale(glm::mat4(1.0f), scale_result.total_scale));
+                        }
+                    } else if (const auto new_local_transform = scene_coords::nodeLocalTransformFromVisualizerWorld(
+                                   scene,
+                                   target.id,
+                                   scaleWorldAboutPivotShearFree(target.world_before, gizmo_pivot_,
+                                                                 gizmo_axes_, scale_result.total_scale))) {
+                        scene.setNodeTransform(target.id, *new_local_transform);
                     }
                 }
             } else if (is_multi_selection) {
                 if (node_gizmo_operation_ == GizmoOperation::Translate) {
-                    const glm::vec3 new_gizmo_pos(gizmo_matrix[3]);
-                    const glm::vec3 delta = new_gizmo_pos - gizmo_pivot_;
+                    const glm::vec3 delta = glm::vec3(gizmo_matrix[3]) - gizmo_pivot_;
                     const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), delta);
-
-                    for (size_t i = 0; i < node_gizmo_node_names_.size(); ++i) {
-                        const glm::mat4 new_world_transform = world_delta * node_original_visualizer_world_transforms_[i];
-                        if (const auto new_local_transform =
-                                scene_coords::nodeLocalTransformFromVisualizerWorld(
-                                    scene_manager->getScene(),
-                                    node_gizmo_node_names_[i],
-                                    new_world_transform)) {
-                            scene_manager->setNodeTransform(node_gizmo_node_names_[i], *new_local_transform);
+                    for (const auto& target : node_drag_targets_) {
+                        if (const auto new_local_transform = scene_coords::nodeLocalTransformFromVisualizerWorld(
+                                scene, target.id, world_delta * target.world_before)) {
+                            scene.setNodeTransform(target.id, *new_local_transform);
                         }
                     }
                 }
@@ -1504,74 +1667,39 @@ namespace lfs::vis::gui {
                 gizmo_cumulative_scale_ = scale_ratio;
 
                 const glm::vec3 bounds_center_local = (node_bounds_min_ + node_bounds_max_) * 0.5f;
-                const auto* node = target_names.empty() ? nullptr : scene.getNode(target_names.front());
-                if (node) {
-                    glm::mat4 new_world_transform = node_bounds_orig_visualizer_world_transform_;
-                    new_world_transform[0] *= scale_ratio.x;
-                    new_world_transform[1] *= scale_ratio.y;
-                    new_world_transform[2] *= scale_ratio.z;
+                const auto& target = node_drag_targets_.front();
+                glm::mat4 new_world_transform = node_bounds_orig_visualizer_world_transform_;
+                new_world_transform[0] *= scale_ratio.x;
+                new_world_transform[1] *= scale_ratio.y;
+                new_world_transform[2] *= scale_ratio.z;
 
-                    const glm::mat3 new_rs(new_world_transform);
-                    new_world_transform[3] = glm::vec4(new_center_world - new_rs * bounds_center_local, 1.0f);
+                const glm::mat3 new_rs(new_world_transform);
+                new_world_transform[3] = glm::vec4(new_center_world - new_rs * bounds_center_local, 1.0f);
 
-                    if (const auto new_local_transform =
-                            scene_coords::nodeLocalTransformFromVisualizerWorld(scene, node->id, new_world_transform)) {
-                        scene_manager->setSelectedNodeTransform(*new_local_transform);
-                    }
+                if (const auto new_local_transform =
+                        scene_coords::nodeLocalTransformFromVisualizerWorld(scene, target.id, new_world_transform)) {
+                    scene.setNodeTransform(target.id, *new_local_transform);
                 }
             } else {
-                const auto& sm_scene = scene_manager->getScene();
-                const auto* node = target_names.empty() ? nullptr : sm_scene.getNode(target_names.front());
-                if (node) {
-                    const glm::mat4 new_world_transform =
-                        gizmo_matrix * glm::translate(glm::mat4(1.0f), -local_pivot);
-                    if (const auto new_local_transform =
-                            scene_coords::nodeLocalTransformFromVisualizerWorld(sm_scene, node->id, new_world_transform)) {
-                        scene_manager->setSelectedNodeTransform(*new_local_transform);
-                    }
+                const auto& target = node_drag_targets_.front();
+                const glm::mat4 new_world_transform =
+                    gizmo_matrix * glm::translate(glm::mat4(1.0f), -local_pivot);
+                if (const auto new_local_transform =
+                        scene_coords::nodeLocalTransformFromVisualizerWorld(scene, target.id, new_world_transform)) {
+                    scene.setNodeTransform(target.id, *new_local_transform);
                 }
             }
         }
 
-        if (!is_using && node_gizmo_active_) {
-            node_gizmo_active_ = false;
-            node_bounds_scale_active_ = false;
-            node_bounds_cache_valid_ = false;
-            if (render_manager) {
-                render_manager->setCropboxGizmoActive(false);
-                render_manager->setEllipsoidGizmoActive(false);
-            }
+        if (!is_using)
+            finishNodeDrag();
 
-            const size_t count = node_gizmo_node_names_.size();
-            std::vector<glm::mat4> final_transforms;
-            final_transforms.reserve(count);
-            for (const auto& name : node_gizmo_node_names_) {
-                final_transforms.push_back(scene_manager->getNodeTransform(name));
-            }
-
-            bool any_changed = false;
-            for (size_t i = 0; i < count; ++i) {
-                if (node_transforms_before_drag_[i] != final_transforms[i]) {
-                    any_changed = true;
-                    break;
-                }
-            }
-
-            if (any_changed) {
-                op::OperatorProperties props;
-                props.set("node_names", node_gizmo_node_names_);
-                props.set("old_transforms", node_transforms_before_drag_);
-                op::operators().invoke(op::BuiltinOp::TransformApplyBatch, &props);
-            }
-        }
-
-        if (node_gizmo_active_ && render_manager) {
-            for (const auto& name : target_names) {
-                const auto* node = scene.getNode(name);
-                if (!node || node->type != core::NodeType::SPLAT)
+        if (node_gizmo_active_ && node_drag_has_overlays_ && render_manager) {
+            for (const auto& target : node_drag_targets_) {
+                if (!target.has_crop_overlay)
                     continue;
 
-                const core::NodeId cropbox_id = scene.getCropBoxForSplat(node->id);
+                const core::NodeId cropbox_id = scene.getCropBoxForSplat(target.id);
                 if (cropbox_id != core::NULL_NODE) {
                     const auto* cropbox_node = scene.getNodeById(cropbox_id);
                     if (cropbox_node && cropbox_node->cropbox) {
@@ -1581,7 +1709,7 @@ namespace lfs::vis::gui {
                     }
                 }
 
-                const core::NodeId ellipsoid_id = scene.getEllipsoidForSplat(node->id);
+                const core::NodeId ellipsoid_id = scene.getEllipsoidForSplat(target.id);
                 if (ellipsoid_id != core::NULL_NODE) {
                     const auto* ellipsoid_node = scene.getNodeById(ellipsoid_id);
                     if (ellipsoid_node && ellipsoid_node->ellipsoid) {
@@ -1860,7 +1988,8 @@ namespace lfs::vis::gui {
 
         bool gizmo_changed = false;
         bool is_using = false;
-        glm::mat4 delta_matrix(1.0f);
+        float rotation_total_angle = 0.0f;
+        glm::vec3 rotation_axis_world(0.0f);
         bool bounds_result_valid = false;
         glm::vec3 bounds_result_center_world(0.0f);
         glm::vec3 bounds_result_local_size(0.0f);
@@ -1924,7 +2053,6 @@ namespace lfs::vis::gui {
             const auto translation_result = drawTranslationGizmo(translation_config);
             is_using = translation_result.active;
             gizmo_changed = translation_result.changed;
-            delta_matrix = glm::translate(glm::mat4(1.0f), translation_result.delta_translation);
             if (translation_result.active) {
                 const glm::vec3 translated_pivot = glm::vec3(gizmo_matrix[3]) + translation_result.delta_translation;
                 gizmo_matrix[3] = glm::vec4(translated_pivot, 1.0f);
@@ -1950,7 +2078,8 @@ namespace lfs::vis::gui {
             const auto rotation_result = drawRotationGizmo(rotation_config);
             is_using = rotation_result.active;
             gizmo_changed = rotation_result.changed;
-            delta_matrix = glm::mat4(rotation_result.delta_rotation);
+            rotation_total_angle = rotation_result.total_angle;
+            rotation_axis_world = rotation_result.axis_world;
             if (rotation_result.hovered || rotation_result.active) {
                 guiFocusState().want_capture_mouse = true;
             }
@@ -1975,7 +2104,6 @@ namespace lfs::vis::gui {
             is_using = is_using || scale_result.active;
             gizmo_changed = gizmo_changed || scale_result.changed;
             if (scale_result.changed) {
-                delta_matrix = glm::scale(glm::mat4(1.0f), scale_result.delta_scale);
                 gizmo_matrix[0] *= scale_result.delta_scale.x;
                 gizmo_matrix[1] *= scale_result.delta_scale.y;
                 gizmo_matrix[2] *= scale_result.delta_scale.z;
@@ -2004,8 +2132,11 @@ namespace lfs::vis::gui {
             auto& scene = scene_manager->getScene();
 
             if (gizmo_op == GizmoOperation::Rotate) {
-                const glm::mat3 delta_rot = gizmo_ops::extractRotation(delta_matrix);
-                gizmo_ops::applyRotation(gizmo_context_, scene, delta_rot);
+                if (glm::dot(rotation_axis_world, rotation_axis_world) > 0.0f) {
+                    gizmo_ops::applyRotation(
+                        gizmo_context_, scene,
+                        glm::mat3(glm::rotate(glm::mat4(1.0f), rotation_total_angle, rotation_axis_world)));
+                }
             } else if (gizmo_op == GizmoOperation::Scale) {
                 glm::vec3 new_size;
                 glm::vec3 new_pivot_world;
@@ -2320,7 +2451,8 @@ namespace lfs::vis::gui {
 
         bool gizmo_changed = false;
         bool is_using = false;
-        glm::mat4 delta_matrix(1.0f);
+        float rotation_total_angle = 0.0f;
+        glm::vec3 rotation_axis_world(0.0f);
         bool bounds_result_valid = false;
         glm::vec3 bounds_result_center_world(0.0f);
         glm::vec3 bounds_result_radii(0.0f);
@@ -2382,7 +2514,6 @@ namespace lfs::vis::gui {
             const auto translation_result = drawTranslationGizmo(translation_config);
             is_using = translation_result.active;
             gizmo_changed = translation_result.changed;
-            delta_matrix = glm::translate(glm::mat4(1.0f), translation_result.delta_translation);
             if (translation_result.active) {
                 const glm::vec3 translated_pivot = glm::vec3(gizmo_matrix[3]) + translation_result.delta_translation;
                 gizmo_matrix[3] = glm::vec4(translated_pivot, 1.0f);
@@ -2408,7 +2539,8 @@ namespace lfs::vis::gui {
             const auto rotation_result = drawRotationGizmo(rotation_config);
             is_using = rotation_result.active;
             gizmo_changed = rotation_result.changed;
-            delta_matrix = glm::mat4(rotation_result.delta_rotation);
+            rotation_total_angle = rotation_result.total_angle;
+            rotation_axis_world = rotation_result.axis_world;
             if (rotation_result.hovered || rotation_result.active) {
                 guiFocusState().want_capture_mouse = true;
             }
@@ -2433,7 +2565,6 @@ namespace lfs::vis::gui {
             is_using = is_using || scale_result.active;
             gizmo_changed = gizmo_changed || scale_result.changed;
             if (scale_result.changed) {
-                delta_matrix = glm::scale(glm::mat4(1.0f), scale_result.delta_scale);
                 gizmo_matrix[0] *= scale_result.delta_scale.x;
                 gizmo_matrix[1] *= scale_result.delta_scale.y;
                 gizmo_matrix[2] *= scale_result.delta_scale.z;
@@ -2462,8 +2593,11 @@ namespace lfs::vis::gui {
             auto& scene = scene_manager->getScene();
 
             if (gizmo_op == GizmoOperation::Rotate) {
-                const glm::mat3 delta_rot = gizmo_ops::extractRotation(delta_matrix);
-                gizmo_ops::applyRotation(gizmo_context_, scene, delta_rot);
+                if (glm::dot(rotation_axis_world, rotation_axis_world) > 0.0f) {
+                    gizmo_ops::applyRotation(
+                        gizmo_context_, scene,
+                        glm::mat3(glm::rotate(glm::mat4(1.0f), rotation_total_angle, rotation_axis_world)));
+                }
             } else if (gizmo_op == GizmoOperation::Scale) {
                 glm::vec3 new_radii;
                 glm::vec3 new_pivot_world;
@@ -2696,6 +2830,7 @@ namespace lfs::vis::gui {
     }
 
     void GizmoManager::deactivateAllTools() {
+        finishNodeDrag();
         python::cancel_active_operator();
         if (auto* const t = viewer_->getAlignTool())
             t->setEnabled(false);

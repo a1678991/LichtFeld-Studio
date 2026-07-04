@@ -45,6 +45,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace lfs::vis {
 
@@ -1379,20 +1380,23 @@ namespace lfs::vis {
     }
 
     void SceneManager::selectNodesById(const std::vector<core::NodeId>& ids) {
+        std::vector<core::NodeId> normalized_ids;
+        normalized_ids.reserve(ids.size());
+        std::unordered_set<core::NodeId> seen_ids;
         for (const core::NodeId id : ids) {
             if (!scene_.getNodeById(id))
                 return;
+            if (seen_ids.insert(id).second)
+                normalized_ids.push_back(id);
         }
         {
             std::shared_lock lock(selection_.mutex());
             const auto& current = selection_.selectedNodeIds();
-            if (current.size() == ids.size() &&
-                std::all_of(ids.begin(), ids.end(),
-                            [&](core::NodeId id) { return current.contains(id); }))
+            if (current == normalized_ids)
                 return;
         }
 
-        selection_.selectNodes(ids);
+        selection_.selectNodes(normalized_ids);
         python::invalidate_poll_caches(1);
         if (services().renderingOrNull())
             services().renderingOrNull()->triggerSelectionFlash();
@@ -1447,8 +1451,12 @@ namespace lfs::vis {
         const auto& ids = selection_.selectedNodeIds();
         if (ids.empty())
             return "";
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         return node ? node->name : "";
+    }
+
+    core::NodeId SceneManager::getActiveNodeId() const {
+        return selection_.activeNodeId();
     }
 
     std::vector<std::string> SceneManager::getSelectedNodeNames() const {
@@ -1479,7 +1487,7 @@ namespace lfs::vis {
         const auto& ids = selection_.selectedNodeIds();
         if (ids.empty())
             return core::NodeType::SPLAT;
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         return node ? node->type : core::NodeType::SPLAT;
     }
 
@@ -1488,7 +1496,7 @@ namespace lfs::vis {
         const auto& ids = selection_.selectedNodeIds();
         if (ids.empty())
             return -1;
-        return scene_.getVisibleNodeIndex(*ids.begin());
+        return scene_.getVisibleNodeIndex(selection_.activeNode());
     }
 
     std::vector<bool> SceneManager::getSelectedNodeMask() const {
@@ -1500,7 +1508,7 @@ namespace lfs::vis {
         const auto& ids = selection_.selectedNodeIds();
         if (ids.size() != 1)
             return -1;
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         if (node && node->type == core::NodeType::CAMERA)
             return node->camera_uid;
         return -1;
@@ -1939,7 +1947,7 @@ namespace lfs::vis {
                 LOG_TRACE("No node selected for translation");
                 return;
             }
-            const auto* node = scene_.getNodeById(*ids.begin());
+            const auto* node = scene_.getNodeById(selection_.activeNode());
             if (!node)
                 return;
             node_name = node->name;
@@ -1966,7 +1974,7 @@ namespace lfs::vis {
             const auto& ids = selection_.selectedNodeIds();
             if (ids.empty())
                 return glm::vec3(0.0f);
-            const auto* node = scene_.getNodeById(*ids.begin());
+            const auto* node = scene_.getNodeById(selection_.activeNode());
             if (!node)
                 return glm::vec3(0.0f);
             node_name = node->name;
@@ -1986,7 +1994,7 @@ namespace lfs::vis {
         if (ids.empty())
             return glm::vec3(0.0f);
 
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         if (!node || !node->model)
             return glm::vec3(0.0f);
         return node->centroid;
@@ -1998,7 +2006,7 @@ namespace lfs::vis {
         if (ids.empty())
             return glm::vec3(0.0f);
 
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         if (!node)
             return glm::vec3(0.0f);
 
@@ -2014,7 +2022,7 @@ namespace lfs::vis {
                 LOG_TRACE("No node selected for transform");
                 return;
             }
-            const auto* node = scene_.getNodeById(*ids.begin());
+            const auto* node = scene_.getNodeById(selection_.activeNode());
             if (!node)
                 return;
             node_name = node->name;
@@ -2032,7 +2040,7 @@ namespace lfs::vis {
             const auto& ids = selection_.selectedNodeIds();
             if (ids.empty())
                 return glm::mat4(1.0f);
-            const auto* node = scene_.getNodeById(*ids.begin());
+            const auto* node = scene_.getNodeById(selection_.activeNode());
             if (!node)
                 return glm::mat4(1.0f);
             node_name = node->name;
@@ -2047,7 +2055,7 @@ namespace lfs::vis {
         if (ids.empty())
             return glm::mat4(1.0f);
 
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         if (!node)
             return glm::mat4(1.0f);
 
@@ -2061,7 +2069,7 @@ namespace lfs::vis {
             return glm::vec3(0.0f);
 
         if (ids.size() == 1) {
-            const auto* node = scene_.getNodeById(*ids.begin());
+            const auto* node = scene_.getNodeById(selection_.activeNode());
             if (!node)
                 return glm::vec3(0.0f);
             return scene_.getNodeBoundsCenter(node->id);
@@ -2177,7 +2185,7 @@ namespace lfs::vis {
         if (ids.empty())
             return core::NULL_NODE;
 
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         if (!node)
             return core::NULL_NODE;
 
@@ -2228,7 +2236,7 @@ namespace lfs::vis {
         std::shared_lock slock(selection_.mutex());
         const auto& ids = selection_.selectedNodeIds();
         if (!ids.empty()) {
-            const auto* const node = scene_.getNodeById(*ids.begin());
+            const auto* const node = scene_.getNodeById(selection_.activeNode());
             if (node && node->type == core::NodeType::CROPBOX) {
                 return core::NULL_NODE;
             }
@@ -2256,7 +2264,7 @@ namespace lfs::vis {
         if (ids.empty())
             return core::NULL_NODE;
 
-        const auto* node = scene_.getNodeById(*ids.begin());
+        const auto* node = scene_.getNodeById(selection_.activeNode());
         if (!node)
             return core::NULL_NODE;
 
@@ -2304,7 +2312,7 @@ namespace lfs::vis {
         std::shared_lock slock(selection_.mutex());
         const auto& ids = selection_.selectedNodeIds();
         if (!ids.empty()) {
-            const auto* const node = scene_.getNodeById(*ids.begin());
+            const auto* const node = scene_.getNodeById(selection_.activeNode());
             if (node && node->type == core::NodeType::ELLIPSOID) {
                 return core::NULL_NODE;
             }
@@ -2973,7 +2981,7 @@ namespace lfs::vis {
             std::shared_lock slock(selection_.mutex());
             const auto& sel_ids = selection_.selectedNodeIds();
             if (!sel_ids.empty()) {
-                const auto* first = scene_.getNodeById(*sel_ids.begin());
+                const auto* first = scene_.getNodeById(selection_.activeNode());
                 state.selected_node_name = first ? first->name : "";
 
                 if (first) {

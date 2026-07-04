@@ -139,6 +139,7 @@ BUILTIN_TOOLS: tuple[ToolDef, ...] = (
         pivot_modes=(
             PivotModeDef("origin", "Origin", "circle-dot"),
             PivotModeDef("bounds", "Bounds", "box"),
+            PivotModeDef("individual", "Individual Origins", "dots-diagonal"),
         ),
         poll=_poll_can_transform,
     ),
@@ -158,6 +159,7 @@ BUILTIN_TOOLS: tuple[ToolDef, ...] = (
         pivot_modes=(
             PivotModeDef("origin", "Origin", "circle-dot"),
             PivotModeDef("bounds", "Bounds", "box"),
+            PivotModeDef("individual", "Individual Origins", "dots-diagonal"),
         ),
         poll=_poll_can_transform,
     ),
@@ -177,6 +179,7 @@ BUILTIN_TOOLS: tuple[ToolDef, ...] = (
         pivot_modes=(
             PivotModeDef("origin", "Origin", "circle-dot"),
             PivotModeDef("bounds", "Bounds", "box"),
+            PivotModeDef("individual", "Individual Origins", "dots-diagonal"),
         ),
         poll=_poll_can_transform,
     ),

@@ -25,6 +25,7 @@ namespace lfs::vis {
         void clearNodeSelection();
         [[nodiscard]] bool isNodeSelected(core::NodeId id) const;
         [[nodiscard]] size_t selectedNodeCount() const;
+        [[nodiscard]] core::NodeId activeNodeId() const;
 
         [[nodiscard]] const std::vector<bool>& getNodeMask(const core::Scene& scene) const;
         void invalidateNodeMask();
@@ -34,12 +35,16 @@ namespace lfs::vis {
         [[nodiscard]] std::shared_mutex& mutex() const { return mutex_; }
 
     private:
-        // Requires caller to hold shared_lock on mutex()
-        [[nodiscard]] const std::unordered_set<core::NodeId>& selectedNodeIds() const;
+        // Require caller to hold shared_lock on mutex()
+        [[nodiscard]] const std::vector<core::NodeId>& selectedNodeIds() const;
+        [[nodiscard]] core::NodeId activeNode() const;
 
         void bumpGeneration();
 
-        std::unordered_set<core::NodeId> selected_nodes_;
+        // Insertion-ordered selection; active node is the most recently selected.
+        std::vector<core::NodeId> selection_order_;
+        std::unordered_set<core::NodeId> selected_lookup_;
+        core::NodeId active_node_ = core::NULL_NODE;
         mutable std::vector<bool> cached_node_mask_;
         mutable bool node_mask_dirty_ = true;
         std::atomic<uint32_t> generation_{0};

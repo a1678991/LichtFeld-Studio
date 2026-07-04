@@ -133,8 +133,8 @@ namespace lfs::vis::op {
     OperatorResult TransformRotateOperator::invoke(OperatorContext& ctx, OperatorProperties& props) {
         return invoke_value_transform_operator(
             ctx, props, glm::vec3(0.0f), "transform.rotate",
-            [](SceneManager& scene, const std::vector<std::string>& nodes, const glm::vec3& value, const std::string_view undo_label) {
-                return cap::rotateNodes(scene, nodes, value, undo_label);
+            [&props](SceneManager& scene, const std::vector<std::string>& nodes, const glm::vec3& value, const std::string_view undo_label) {
+                return cap::rotateNodes(scene, nodes, value, undo_label, props.get<glm::vec3>("pivot"));
             });
     }
 
@@ -156,8 +156,8 @@ namespace lfs::vis::op {
     OperatorResult TransformScaleOperator::invoke(OperatorContext& ctx, OperatorProperties& props) {
         return invoke_value_transform_operator(
             ctx, props, glm::vec3(1.0f), "transform.scale",
-            [](SceneManager& scene, const std::vector<std::string>& nodes, const glm::vec3& value, const std::string_view undo_label) {
-                return cap::scaleNodes(scene, nodes, value, undo_label);
+            [&props](SceneManager& scene, const std::vector<std::string>& nodes, const glm::vec3& value, const std::string_view undo_label) {
+                return cap::scaleNodes(scene, nodes, value, undo_label, props.get<glm::vec3>("pivot"));
             });
     }
 
@@ -228,6 +228,8 @@ namespace lfs::vis::op {
                 make_schema("node", "Optional node name; defaults to the current selected node(s)",
                             PropertyType::STRING),
                 make_schema("value", "Visualizer-world XYZ Euler delta in radians", PropertyType::FLOAT_VECTOR, 3),
+                make_schema("pivot", "Optional visualizer-world pivot; defaults to each node's own origin",
+                            PropertyType::FLOAT_VECTOR, 3),
             });
         propertySchemas().registerSchema(
             TransformScaleOperator::DESCRIPTOR.id(),
@@ -235,6 +237,8 @@ namespace lfs::vis::op {
                 make_schema("node", "Optional node name; defaults to the current selected node(s)",
                             PropertyType::STRING),
                 make_schema("value", "Visualizer-world XYZ scale multiplier", PropertyType::FLOAT_VECTOR, 3),
+                make_schema("pivot", "Optional visualizer-world pivot; defaults to each node's own origin",
+                            PropertyType::FLOAT_VECTOR, 3),
             });
         propertySchemas().registerSchema(
             TransformApplyBatchOperator::DESCRIPTOR.id(),

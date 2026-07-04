@@ -113,6 +113,17 @@ namespace lfs::core {
         case MutationType::NODE_ADDED:
         case MutationType::NODE_REMOVED:
         case MutationType::MODEL_CHANGED:
+        case MutationType::CLEARED:
+            invalidateContentBounds();
+            break;
+        default:
+            break;
+        }
+
+        switch (type) {
+        case MutationType::NODE_ADDED:
+        case MutationType::NODE_REMOVED:
+        case MutationType::MODEL_CHANGED:
             resizeSelectionIfSizeMismatch(currentSelectionCapacity());
             break;
         default:
@@ -122,6 +133,10 @@ namespace lfs::core {
         if (transaction_depth_ == 0) {
             flushMutations();
         }
+    }
+
+    void Scene::invalidateContentBounds() {
+        content_generation_.fetch_add(1, std::memory_order_acq_rel);
     }
 
     void Scene::flushMutations() {
@@ -413,6 +428,13 @@ namespace lfs::core {
 
     void Scene::setNodeTransform(const std::string& name, const glm::mat4& transform) {
         auto* node = getMutableNode(name);
+        if (node) {
+            node->local_transform.set(transform, false);
+        }
+    }
+
+    void Scene::setNodeTransform(const NodeId id, const glm::mat4& transform) {
+        auto* node = getNodeById(id);
         if (node) {
             node->local_transform.set(transform, false);
         }
@@ -3070,6 +3092,45 @@ namespace lfs::core {
         node.transform_dirty = false;
     }
 
+    // The per-node cache is unsynchronized: queries must stay on a single (GUI) thread.
+    // Invalidation is an atomic generation bump and may come from any thread; loading
+    // the generation before reading content keeps a concurrent bump from being cached over.
+    const SceneNode::ContentBounds& Scene::nodeContentBounds(const SceneNode& node) const {
+        const uint64_t generation = content_generation_.load(std::memory_order_acquire);
+        if (node.content_bounds_generation_ == generation)
+            return node.content_bounds_cache_;
+
+        SceneNode::ContentBounds bounds;
+        const auto expand = [&bounds](const glm::vec3& min_b, const glm::vec3& max_b) {
+            if (bounds.valid) {
+                bounds.min = glm::min(bounds.min, min_b);
+                bounds.max = glm::max(bounds.max, max_b);
+            } else {
+                bounds.min = min_b;
+                bounds.max = max_b;
+                bounds.valid = true;
+            }
+        };
+
+        glm::vec3 content_min, content_max;
+        if (node.model && node.model->size() > 0 &&
+            lfs::core::compute_bounds(*node.model, content_min, content_max)) {
+            expand(content_min, content_max);
+        }
+        if (node.point_cloud && node.point_cloud->size() > 0 &&
+            lfs::core::compute_bounds(*node.point_cloud, content_min, content_max)) {
+            expand(content_min, content_max);
+        }
+        if (node.mesh && node.mesh->vertex_count() > 0 &&
+            lfs::core::compute_bounds(*node.mesh, content_min, content_max)) {
+            expand(content_min, content_max);
+        }
+
+        node.content_bounds_cache_ = bounds;
+        node.content_bounds_generation_ = generation;
+        return node.content_bounds_cache_;
+    }
+
     bool Scene::getNodeBounds(const NodeId id, glm::vec3& out_min, glm::vec3& out_max) const {
         const auto* node = getNodeById(id);
         if (!node)
@@ -3085,44 +3146,8 @@ namespace lfs::core {
             has_bounds = true;
         };
 
-        if (node->model && node->model->size() > 0) {
-            glm::vec3 model_min, model_max;
-            if (lfs::core::compute_bounds(*node->model, model_min, model_max)) {
-                expand_bounds(model_min, model_max);
-            }
-        }
-
-        if (node->point_cloud && node->point_cloud->size() > 0) {
-            auto means_cpu = node->point_cloud->means.cpu();
-            auto acc = means_cpu.accessor<float, 2>();
-            glm::vec3 pc_min(std::numeric_limits<float>::max());
-            glm::vec3 pc_max(std::numeric_limits<float>::lowest());
-            for (int64_t i = 0; i < node->point_cloud->size(); ++i) {
-                pc_min.x = std::min(pc_min.x, acc(i, 0));
-                pc_min.y = std::min(pc_min.y, acc(i, 1));
-                pc_min.z = std::min(pc_min.z, acc(i, 2));
-                pc_max.x = std::max(pc_max.x, acc(i, 0));
-                pc_max.y = std::max(pc_max.y, acc(i, 1));
-                pc_max.z = std::max(pc_max.z, acc(i, 2));
-            }
-            expand_bounds(pc_min, pc_max);
-        }
-
-        if (node->mesh && node->mesh->vertex_count() > 0) {
-            auto verts_cpu = node->mesh->vertices.to(Device::CPU).contiguous();
-            auto acc = verts_cpu.accessor<float, 2>();
-            const int64_t mesh_nv = node->mesh->vertex_count();
-            glm::vec3 m_min(std::numeric_limits<float>::max());
-            glm::vec3 m_max(std::numeric_limits<float>::lowest());
-            for (int64_t i = 0; i < mesh_nv; ++i) {
-                m_min.x = std::min(m_min.x, acc(i, 0));
-                m_min.y = std::min(m_min.y, acc(i, 1));
-                m_min.z = std::min(m_min.z, acc(i, 2));
-                m_max.x = std::max(m_max.x, acc(i, 0));
-                m_max.y = std::max(m_max.y, acc(i, 1));
-                m_max.z = std::max(m_max.z, acc(i, 2));
-            }
-            expand_bounds(m_min, m_max);
+        if (const auto& content = nodeContentBounds(*node); content.valid) {
+            expand_bounds(content.min, content.max);
         }
 
         if (node->type == NodeType::CROPBOX && node->cropbox) {

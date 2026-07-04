@@ -41,6 +41,9 @@ namespace lfs::vis::gui {
         RotationGizmoAxis hovered_axis = RotationGizmoAxis::None;
         RotationGizmoAxis active_axis = RotationGizmoAxis::None;
         glm::mat3 delta_rotation{1.0f};
+        // Drift-free absolute rotation since drag start
+        glm::vec3 axis_world{0.0f};
+        float total_angle = 0.0f;
     };
 
     LFS_VIS_API RotationGizmoResult drawRotationGizmo(const RotationGizmoConfig& config);

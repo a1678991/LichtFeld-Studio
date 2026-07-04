@@ -229,6 +229,8 @@ class RuntimeState:
     active_submode = StateSignal[str]("active_submode", "")
     transform_space = StateSignal[int]("transform_space", 0)
     pivot_mode = StateSignal[int]("pivot_mode", 0)
+    transform_skipped_locked_targets = StateSignal[int]("transform_skipped_locked_targets", 0)
+    transform_skipped_unsupported_targets = StateSignal[int]("transform_skipped_unsupported_targets", 0)
     import_overlay_state = StateSignal[dict[str, object]]("import_overlay_state", {})
     video_export_overlay_state = StateSignal[dict[str, object]](
         "video_export_overlay_state",
@@ -298,6 +300,8 @@ class RuntimeState:
         cls.active_submode.value = ""
         cls.transform_space.value = 0
         cls.pivot_mode.value = 0
+        cls.transform_skipped_locked_targets.value = 0
+        cls.transform_skipped_unsupported_targets.value = 0
         cls.import_overlay_state.value = {}
         cls.video_export_overlay_state.value = {}
         cls.export_progress_state.value = {}

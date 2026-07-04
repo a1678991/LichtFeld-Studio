@@ -878,6 +878,8 @@ namespace lfs::vis {
 
         // Training completed - update content type
         state::TrainingCompleted::when([this](const auto& event) {
+            if (scene_manager_)
+                scene_manager_->getScene().invalidateContentBounds();
             handleTrainingCompleted(event);
         });
 
@@ -906,7 +908,9 @@ namespace lfs::vis {
         });
 
         // Signal bridge event handlers
-        state::TrainingProgress::when([](const auto& event) {
+        state::TrainingProgress::when([this](const auto& event) {
+            if (scene_manager_)
+                scene_manager_->getScene().invalidateContentBounds();
             auto& store = app_store();
             lfs::core::reactive::BatchUpdate batch(store.store());
             store.iteration.set(event.iteration);

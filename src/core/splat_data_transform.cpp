@@ -5,6 +5,7 @@
 #include "core/splat_data_transform.hpp"
 #include "core/cuda/sh_layout.cuh"
 #include "core/logger.hpp"
+#include "core/mesh_data.hpp"
 #include "core/point_cloud.hpp"
 #include "core/splat_data.hpp"
 #include "geometry/bounding_box.hpp"
@@ -719,10 +720,12 @@ namespace lfs::core {
                 max_bounds[i] = sorted[hi].item() + padding;
             }
         } else {
+            const auto min_vals = visible_means.min({0}, false).to_vector();
+            const auto max_vals = visible_means.max({0}, false).to_vector();
+            assert(min_vals.size() == 3 && max_vals.size() == 3);
             for (int i = 0; i < 3; ++i) {
-                const auto col = visible_means.slice(1, i, i + 1).squeeze(1);
-                min_bounds[i] = col.min().item() - padding;
-                max_bounds[i] = col.max().item() + padding;
+                min_bounds[i] = min_vals[static_cast<size_t>(i)] - padding;
+                max_bounds[i] = max_vals[static_cast<size_t>(i)] + padding;
             }
         }
 
@@ -751,11 +754,33 @@ namespace lfs::core {
                 max_bounds[i] = sorted[hi].item() + padding;
             }
         } else {
+            const auto min_vals = means.min({0}, false).to_vector();
+            const auto max_vals = means.max({0}, false).to_vector();
+            assert(min_vals.size() == 3 && max_vals.size() == 3);
             for (int i = 0; i < 3; ++i) {
-                const auto col = means.slice(1, i, i + 1).squeeze(1);
-                min_bounds[i] = col.min().item() - padding;
-                max_bounds[i] = col.max().item() + padding;
+                min_bounds[i] = min_vals[static_cast<size_t>(i)] - padding;
+                max_bounds[i] = max_vals[static_cast<size_t>(i)] + padding;
             }
+        }
+
+        return true;
+    }
+
+    bool compute_bounds(const MeshData& mesh,
+                        glm::vec3& min_bounds,
+                        glm::vec3& max_bounds) {
+        const auto& vertices = mesh.vertices;
+        if (!vertices.is_valid() || vertices.size(0) == 0) {
+            return false;
+        }
+        assert(vertices.ndim() == 2 && vertices.size(1) == 3);
+
+        const auto min_vals = vertices.min({0}, false).to_vector();
+        const auto max_vals = vertices.max({0}, false).to_vector();
+        assert(min_vals.size() == 3 && max_vals.size() == 3);
+        for (int i = 0; i < 3; ++i) {
+            min_bounds[i] = min_vals[static_cast<size_t>(i)];
+            max_bounds[i] = max_vals[static_cast<size_t>(i)];
         }
 
         return true;

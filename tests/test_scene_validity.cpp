@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cuda_runtime.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include "core/cuda/sh_layout.cuh"
+#include "core/editor_context.hpp"
 #include "core/parameters.hpp"
 #include "core/point_cloud.hpp"
 #include "core/scene.hpp"
@@ -18,8 +20,10 @@
 #include "training/optimizer/adam_optimizer.hpp"
 #include "training/training_setup.hpp"
 #include "visualizer/app_store.hpp"
+#include "visualizer/gui_capabilities.hpp"
 #include "visualizer/scene/scene_manager.hpp"
 #include "visualizer/scene/selection_state.hpp"
+#include "visualizer/scene_coordinate_utils.hpp"
 
 namespace lfs::python {
 
@@ -101,6 +105,15 @@ namespace lfs::python {
 
         void expect_sh_degree(const core::SplatData& splat, const int sh_degree, const size_t count) {
             expect_sh_degree(splat, sh_degree, sh_degree, count);
+        }
+
+        bool has_cuda_device() {
+            int device_count = 0;
+            return cudaGetDeviceCount(&device_count) == cudaSuccess && device_count > 0;
+        }
+
+        glm::vec3 visualizer_translation(const core::Scene& scene, const core::NodeId id) {
+            return glm::vec3(lfs::vis::scene_coords::nodeVisualizerWorldTransform(scene, id)[3]);
         }
     } // namespace
 
@@ -751,6 +764,189 @@ namespace lfs::python {
 
         EXPECT_EQ(scene.getNodeById(splat)->parent_id, core::NULL_NODE);
         EXPECT_TRUE(scene.getNodeById(group)->children.empty());
+    }
+
+    TEST_F(SceneValidityTest, NodeBoundsMatchSplatMeans) {
+        core::Scene scene;
+        const auto splat = scene.addSplat("Splat", make_test_splat(8));
+
+        glm::vec3 min_bounds, max_bounds;
+        ASSERT_TRUE(scene.getNodeBounds(splat, min_bounds, max_bounds));
+        EXPECT_FLOAT_EQ(min_bounds.x, 0.0f);
+        EXPECT_FLOAT_EQ(max_bounds.x, 7.0f);
+        EXPECT_FLOAT_EQ(min_bounds.y, 0.0f);
+        EXPECT_FLOAT_EQ(max_bounds.y, 0.0f);
+    }
+
+    TEST_F(SceneValidityTest, NodeBoundsMatchSplatMeansCuda) {
+        if (!has_cuda_device()) {
+            GTEST_SKIP() << "CUDA device required for CUDA splat bounds";
+        }
+
+        auto splat_data = make_test_splat(8);
+        splat_data->means_raw() = splat_data->means_raw().cuda();
+
+        core::Scene scene;
+        const auto splat = scene.addSplat("Splat", std::move(splat_data));
+
+        glm::vec3 min_bounds, max_bounds;
+        ASSERT_TRUE(scene.getNodeBounds(splat, min_bounds, max_bounds));
+        EXPECT_FLOAT_EQ(min_bounds.x, 0.0f);
+        EXPECT_FLOAT_EQ(max_bounds.x, 7.0f);
+    }
+
+    TEST_F(SceneValidityTest, NodeBoundsSurviveTransformAndRefreshOnModelChange) {
+        core::Scene scene;
+        const auto splat = scene.addSplat("Splat", make_test_splat(8));
+
+        glm::vec3 min_bounds, max_bounds;
+        ASSERT_TRUE(scene.getNodeBounds(splat, min_bounds, max_bounds));
+        EXPECT_FLOAT_EQ(max_bounds.x, 7.0f);
+
+        scene.setNodeTransform("Splat", glm::translate(glm::mat4(1.0f), glm::vec3(100.0f, 0.0f, 0.0f)));
+        ASSERT_TRUE(scene.getNodeBounds(splat, min_bounds, max_bounds));
+        EXPECT_FLOAT_EQ(max_bounds.x, 7.0f);
+
+        scene.replaceNodeModel("Splat", make_test_splat(3));
+        ASSERT_TRUE(scene.getNodeBounds(splat, min_bounds, max_bounds));
+        EXPECT_FLOAT_EQ(max_bounds.x, 2.0f);
+    }
+
+    TEST_F(SceneValidityTest, NodeBoundsRefreshAfterExplicitContentInvalidation) {
+        core::Scene scene;
+        const auto splat = scene.addSplat("Splat", make_test_splat(8));
+
+        glm::vec3 min_bounds, max_bounds;
+        ASSERT_TRUE(scene.getNodeBounds(splat, min_bounds, max_bounds));
+        EXPECT_FLOAT_EQ(max_bounds.x, 7.0f);
+
+        auto* node = scene.getNodeById(splat);
+        ASSERT_NE(node, nullptr);
+        ASSERT_TRUE(node->model);
+
+        std::vector<float> moved_means(8 * 3, 0.0f);
+        for (size_t i = 0; i < 8; ++i)
+            moved_means[i * 3] = 100.0f + static_cast<float>(i);
+        node->model->means_raw().copy_from(
+            core::Tensor::from_vector(moved_means, {size_t{8}, size_t{3}}, core::Device::CPU));
+
+        scene.invalidateContentBounds();
+
+        ASSERT_TRUE(scene.getNodeBounds(splat, min_bounds, max_bounds));
+        EXPECT_FLOAT_EQ(min_bounds.x, 100.0f);
+        EXPECT_FLOAT_EQ(max_bounds.x, 107.0f);
+    }
+
+    TEST_F(SceneValidityTest, EditorContextAllowsEditableSubsetForTransforms) {
+        lfs::vis::SceneManager sm;
+        auto& scene = sm.getScene();
+        const auto locked = scene.addSplat("Locked", make_test_splat(1));
+        const auto editable = scene.addSplat("Editable", make_test_splat(1));
+        scene.setNodeLocked("Locked", true);
+
+        sm.selectNodesById({locked, editable});
+
+        lfs::vis::EditorContext editor;
+        editor.update(&sm, nullptr);
+
+        EXPECT_TRUE(editor.canTransformSelectedNode());
+        EXPECT_TRUE(editor.isToolAvailable(lfs::vis::ToolType::Translate));
+        EXPECT_EQ(editor.getToolUnavailableReason(lfs::vis::ToolType::Translate), nullptr);
+    }
+
+    TEST_F(SceneValidityTest, TransformResolverReportsSkippedReasons) {
+        lfs::vis::SceneManager sm;
+        auto& scene = sm.getScene();
+        const auto editable = scene.addSplat("Editable", make_test_splat(1));
+        const auto locked = scene.addSplat("Locked", make_test_splat(1));
+        const auto camera = scene.addCamera("Camera", core::NULL_NODE, std::make_shared<core::Camera>());
+        scene.setNodeLocked("Locked", true);
+
+        sm.selectNodesById({editable, locked, camera});
+
+        auto targets = lfs::vis::cap::resolveEditableTransformSelection(
+            sm, std::nullopt, lfs::vis::cap::TransformTargetPolicy::AllowEditableSubset);
+
+        ASSERT_TRUE(targets);
+        ASSERT_EQ(targets->node_names.size(), 1u);
+        EXPECT_EQ(targets->node_names.front(), "Editable");
+        EXPECT_EQ(targets->skipped_locked, 1u);
+        EXPECT_EQ(targets->skipped_untransformable, 1u);
+    }
+
+    TEST_F(SceneValidityTest, SceneManagerReselectUpdatesActiveNodeWhenOrderChanges) {
+        lfs::vis::SceneManager sm;
+        auto& scene = sm.getScene();
+        const auto first = scene.addSplat("First", make_test_splat(1));
+        const auto second = scene.addSplat("Second", make_test_splat(1));
+
+        sm.selectNodesById({first, second});
+        EXPECT_EQ(sm.getSelectedNodeName(), "Second");
+        const uint32_t initial_generation = sm.selectionState().generation();
+
+        sm.selectNodesById({second, first});
+
+        EXPECT_EQ(sm.getSelectedNodeName(), "First");
+        EXPECT_GT(sm.selectionState().generation(), initial_generation);
+    }
+
+    TEST_F(SceneValidityTest, RotateNodesDefaultPivotUsesIndividualOrigins) {
+        lfs::vis::SceneManager sm;
+        auto& scene = sm.getScene();
+        const auto first = scene.addSplat("First", make_test_splat(1));
+        const auto second = scene.addSplat("Second", make_test_splat(1));
+
+        ASSERT_TRUE(lfs::vis::cap::setTransform(
+            sm, {"First"}, glm::vec3(1.0f, 0.0f, 0.0f), std::nullopt, std::nullopt, "test.set"));
+        ASSERT_TRUE(lfs::vis::cap::setTransform(
+            sm, {"Second"}, glm::vec3(3.0f, 0.0f, 0.0f), std::nullopt, std::nullopt, "test.set"));
+
+        ASSERT_TRUE(lfs::vis::cap::rotateNodes(
+            sm, {"First", "Second"}, glm::vec3(0.0f, 0.0f, 1.57079632679f), "test.rotate"));
+
+        EXPECT_NEAR(visualizer_translation(scene, first).x, 1.0f, 1e-4f);
+        EXPECT_NEAR(visualizer_translation(scene, first).y, 0.0f, 1e-4f);
+        EXPECT_NEAR(visualizer_translation(scene, second).x, 3.0f, 1e-4f);
+        EXPECT_NEAR(visualizer_translation(scene, second).y, 0.0f, 1e-4f);
+    }
+
+    TEST_F(SceneValidityTest, RotateNodesExplicitPivotUsesSharedWorldPivot) {
+        lfs::vis::SceneManager sm;
+        auto& scene = sm.getScene();
+        const auto first = scene.addSplat("First", make_test_splat(1));
+        const auto second = scene.addSplat("Second", make_test_splat(1));
+
+        ASSERT_TRUE(lfs::vis::cap::setTransform(
+            sm, {"First"}, glm::vec3(1.0f, 0.0f, 0.0f), std::nullopt, std::nullopt, "test.set"));
+        ASSERT_TRUE(lfs::vis::cap::setTransform(
+            sm, {"Second"}, glm::vec3(3.0f, 0.0f, 0.0f), std::nullopt, std::nullopt, "test.set"));
+
+        ASSERT_TRUE(lfs::vis::cap::rotateNodes(
+            sm, {"First", "Second"}, glm::vec3(0.0f, 0.0f, 1.57079632679f), "test.rotate", glm::vec3(0.0f)));
+
+        EXPECT_NEAR(visualizer_translation(scene, first).x, 0.0f, 1e-4f);
+        EXPECT_NEAR(visualizer_translation(scene, first).y, 1.0f, 1e-4f);
+        EXPECT_NEAR(visualizer_translation(scene, second).x, 0.0f, 1e-4f);
+        EXPECT_NEAR(visualizer_translation(scene, second).y, 3.0f, 1e-4f);
+    }
+
+    TEST_F(SceneValidityTest, SelectionStatePreservesOrderAndActiveNode) {
+        lfs::vis::SelectionState selection;
+        const std::vector<core::NodeId> ids = {7, 3, 5};
+        selection.selectNodes(ids);
+        EXPECT_EQ(selection.selectedNodeCount(), 3u);
+        EXPECT_EQ(selection.activeNodeId(), 5);
+
+        selection.addToSelection(3);
+        EXPECT_EQ(selection.selectedNodeCount(), 3u);
+        EXPECT_EQ(selection.activeNodeId(), 3);
+
+        selection.removeFromSelection(3);
+        EXPECT_EQ(selection.selectedNodeCount(), 2u);
+        EXPECT_EQ(selection.activeNodeId(), 5);
+
+        selection.clearNodeSelection();
+        EXPECT_EQ(selection.activeNodeId(), core::NULL_NODE);
     }
 
 } // namespace lfs::python

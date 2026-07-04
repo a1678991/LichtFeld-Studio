@@ -161,10 +161,9 @@ namespace lfs::vis::gui {
         void applyRotation(
             GizmoTransformContext& ctx,
             core::Scene& scene,
-            const glm::mat3& delta_rotation) {
+            const glm::mat3& total_rotation) {
 
-            // Accumulate rotation in world space
-            ctx.cumulative_rotation = delta_rotation * ctx.cumulative_rotation;
+            ctx.cumulative_rotation = total_rotation;
             const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), ctx.pivot_world) *
                                           glm::mat4(ctx.cumulative_rotation) *
                                           glm::translate(glm::mat4(1.0f), -ctx.pivot_world);

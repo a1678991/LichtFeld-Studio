@@ -94,10 +94,11 @@ namespace lfs::vis::gui {
             core::Scene& scene,
             const glm::vec3& new_pivot_world);
 
+        // total_rotation is the drift-free absolute rotation since drag start
         void applyRotation(
             GizmoTransformContext& ctx,
             core::Scene& scene,
-            const glm::mat3& delta_rotation);
+            const glm::mat3& total_rotation);
 
         // For cropbox/ellipsoid bounds scaling
         void applyBoundsScale(

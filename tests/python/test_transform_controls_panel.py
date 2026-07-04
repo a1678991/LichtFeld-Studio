@@ -37,6 +37,7 @@ def _decompose_transform(matrix):
 def _install_lf_stub(monkeypatch):
     state = SimpleNamespace(
         active_tool="builtin.translate",
+        active_node_name=None,
         selected_names=[],
         local_transforms={},
         visualizer_world_transforms={},
@@ -85,6 +86,10 @@ def _install_lf_stub(monkeypatch):
     )
     lf_stub.get_node_transform = lambda name: state.local_transforms.get(name)
     lf_stub.get_node_visualizer_world_transform = lambda name: state.visualizer_world_transforms.get(name)
+    lf_stub.get_selected_node_name = lambda: state.active_node_name
+    lf_stub.get_scene = lambda: SimpleNamespace(
+        get_node=lambda _name: SimpleNamespace(type=SimpleNamespace(name="SPLAT"), locked=False)
+    )
 
     def _set_node_transform(name, matrix):
         state.set_local_calls.append((name, list(matrix)))
@@ -160,6 +165,20 @@ class _DocumentStub:
         return None
 
 
+class _SceneNodeStub:
+    def __init__(self, node_type="SPLAT", locked=False):
+        self.type = SimpleNamespace(name=node_type)
+        self.locked = locked
+
+
+class _SceneStub:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+    def get_node(self, name):
+        return self.nodes.get(name)
+
+
 @pytest.fixture
 def transform_controls_module(monkeypatch):
     project_root = Path(__file__).parent.parent.parent
@@ -204,6 +223,28 @@ def test_transform_controls_single_node_writes_visualizer_world_transform(transf
     assert state.set_visualizer_world_calls == [("target", _translation_matrix(4.0, -5.0, -6.0))]
 
 
+def test_transform_controls_single_locked_node_does_not_write(transform_controls_module):
+    module, state = transform_controls_module
+    panel = module.TransformControlsController()
+    panel._selected = ["locked"]
+    panel._active_tool = "builtin.translate"
+    panel._trans = [4.0, 0.0, 0.0]
+    panel._euler = [0.0, 0.0, 0.0]
+    panel._scale = [1.0, 1.0, 1.0]
+
+    module.lf.get_scene = lambda: _SceneStub({"locked": _SceneNodeStub(locked=True)})
+    state.visualizer_world_transforms["locked"] = _translation_matrix(1.0, 0.0, 0.0)
+
+    panel._begin_edit()
+    panel._apply_single_transform()
+    panel._reset_single_transform()
+
+    assert panel._state.editing_active is False
+    assert state.set_local_calls == []
+    assert state.set_visualizer_world_calls == []
+    assert state.op_calls == []
+
+
 def test_transform_controls_multi_translate_uses_visualizer_world_space(transform_controls_module):
     module, state = transform_controls_module
     panel = module.TransformControlsController()
@@ -226,6 +267,99 @@ def test_transform_controls_multi_translate_uses_visualizer_world_space(transfor
     assert state.set_visualizer_world_calls == [
         ("left", _translation_matrix(11.0, -18.0, -29.0)),
         ("right", _translation_matrix(16.0, -22.0, -32.0)),
+    ]
+
+
+def test_transform_controls_multi_rotate_individual_pivot_keeps_positions(transform_controls_module):
+    module, state = transform_controls_module
+    panel = module.TransformControlsController()
+    panel._selected = ["left", "right"]
+    panel._active_tool = "builtin.rotate"
+    panel._pivot_mode = module._PIVOT_INDIVIDUAL
+
+    state.selection_visualizer_world_center = [2.5, 3.5, 4.5]
+    state.local_transforms["left"] = _translation_matrix(1.0, 2.0, 3.0)
+    state.local_transforms["right"] = _translation_matrix(4.0, 5.0, 6.0)
+    state.visualizer_world_transforms["left"] = _translation_matrix(1.0, 2.0, 3.0)
+    state.visualizer_world_transforms["right"] = _translation_matrix(4.0, 5.0, 6.0)
+
+    panel._begin_edit()
+    panel._state.display_euler = [0.0, 0.0, 90.0]
+
+    panel._apply_multi_transform("builtin.rotate")
+
+    assert state.set_visualizer_world_calls == [
+        ("left", _translation_matrix(1.0, 2.0, 3.0)),
+        ("right", _translation_matrix(4.0, 5.0, 6.0)),
+    ]
+
+
+def test_transform_controls_multi_rotate_origin_pivot_orbits_active_node(transform_controls_module):
+    module, state = transform_controls_module
+    panel = module.TransformControlsController()
+    panel._selected = ["left", "right"]
+    panel._active_tool = "builtin.rotate"
+    panel._pivot_mode = module._PIVOT_ORIGIN
+
+    state.active_node_name = "right"
+    state.selection_visualizer_world_center = [1.0, 0.0, 0.0]
+    state.local_transforms["left"] = _translation_matrix(0.0, 0.0, 0.0)
+    state.local_transforms["right"] = _translation_matrix(2.0, 0.0, 0.0)
+    state.visualizer_world_transforms["left"] = _translation_matrix(0.0, 0.0, 0.0)
+    state.visualizer_world_transforms["right"] = _translation_matrix(2.0, 0.0, 0.0)
+
+    panel._begin_edit()
+    panel._state.display_euler = [0.0, 0.0, 90.0]
+
+    panel._apply_multi_transform("builtin.rotate")
+
+    assert [name for name, _ in state.set_visualizer_world_calls] == ["left", "right"]
+    left_translation = _translation_from_matrix(state.set_visualizer_world_calls[0][1])
+    right_translation = _translation_from_matrix(state.set_visualizer_world_calls[1][1])
+    assert left_translation == pytest.approx([2.0, -2.0, 0.0], abs=1e-9)
+    assert right_translation == pytest.approx([2.0, 0.0, 0.0], abs=1e-9)
+
+
+def test_transform_controls_multi_edit_skips_locked_nodes(transform_controls_module):
+    module, state = transform_controls_module
+    panel = module.TransformControlsController()
+    panel._selected = ["locked", "editable"]
+    panel._active_tool = "builtin.translate"
+
+    module.lf.get_scene = lambda: _SceneStub(
+        {
+            "locked": _SceneNodeStub(locked=True),
+            "editable": _SceneNodeStub(),
+        }
+    )
+
+    state.selection_visualizer_world_center = [0.0, 0.0, 0.0]
+    state.local_transforms["locked"] = _translation_matrix(1.0, 0.0, 0.0)
+    state.local_transforms["editable"] = _translation_matrix(2.0, 0.0, 0.0)
+    state.visualizer_world_transforms["locked"] = _translation_matrix(1.0, 0.0, 0.0)
+    state.visualizer_world_transforms["editable"] = _translation_matrix(2.0, 0.0, 0.0)
+
+    panel._begin_edit()
+    panel._trans = [1.0, 0.0, 0.0]
+    panel._state.display_translation = panel._trans.copy()
+    panel._apply_multi_transform("builtin.translate")
+
+    assert panel._state.multi_node_names == ["editable"]
+    assert state.set_visualizer_world_calls == [
+        ("editable", _translation_matrix(3.0, 0.0, 0.0)),
+    ]
+
+    state.local_transforms["editable"] = _translation_matrix(3.0, 0.0, 0.0)
+    panel._commit_multi_edit()
+
+    assert state.op_calls == [
+        (
+            "transform.apply_batch",
+            {
+                "node_names": ["editable"],
+                "old_transforms": [_translation_matrix(2.0, 0.0, 0.0)],
+            },
+        )
     ]
 
 

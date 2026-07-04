@@ -120,6 +120,14 @@ namespace lfs::core {
         mutable glm::mat4 world_transform{1.0f};
         mutable bool transform_dirty = true;
 
+        struct ContentBounds {
+            glm::vec3 min{0.0f};
+            glm::vec3 max{0.0f};
+            bool valid = false;
+        };
+        mutable ContentBounds content_bounds_cache_;
+        mutable uint64_t content_bounds_generation_ = 0;
+
         lfs::core::prop::AnimatableProperty<glm::mat4> local_transform{glm::mat4{1.0f}};
         lfs::core::prop::AnimatableProperty<bool> visible{true};
         lfs::core::prop::AnimatableProperty<bool> locked{false};
@@ -163,6 +171,7 @@ namespace lfs::core {
         };
 
         void notifyMutation(MutationType type);
+        void invalidateContentBounds();
 
         class LFS_CORE_API Transaction {
         public:
@@ -198,6 +207,7 @@ namespace lfs::core {
         void setNodeVisibility(NodeId id, bool visible);
         void setNodeLocked(const std::string& name, bool locked);
         void setNodeTransform(const std::string& name, const glm::mat4& transform);
+        void setNodeTransform(NodeId id, const glm::mat4& transform);
         glm::mat4 getNodeTransform(const std::string& name) const;
         bool renameNode(NodeId id, const std::string& new_name);
         bool renameNode(const std::string& old_name, const std::string& new_name);
@@ -449,6 +459,7 @@ namespace lfs::core {
 
         mutable std::vector<glm::mat4> cached_transforms_;
         mutable std::atomic<bool> transform_cache_valid_{false};
+        mutable std::atomic<uint64_t> content_generation_{1};
         mutable bool consolidated_ = false;
         mutable std::vector<ConsolidatedNodeSlot> consolidated_node_slots_;
         mutable uint64_t consolidated_generation_ = 0;
@@ -467,6 +478,7 @@ namespace lfs::core {
         void rebuildModelCacheIfNeeded(bool include_hidden_splats) const;
         void rebuildTransformCacheIfNeeded() const;
         void updateWorldTransform(const SceneNode& node) const;
+        [[nodiscard]] const SceneNode::ContentBounds& nodeContentBounds(const SceneNode& node) const;
         void removeNodeInternal(const std::string& name, bool keep_children, bool force);
         [[nodiscard]] size_t currentSelectionCapacity() const;
         [[nodiscard]] lfs::core::Tensor liveSelectionMask(size_t expected_size,

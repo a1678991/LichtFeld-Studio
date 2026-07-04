@@ -4,59 +4,84 @@
 
 #include "scene/selection_state.hpp"
 #include "visualizer/app_store.hpp"
+#include <algorithm>
 #include <cassert>
 
 namespace lfs::vis {
 
     void SelectionState::selectNode(const core::NodeId id) {
         std::unique_lock lock(mutex_);
-        selected_nodes_.clear();
-        selected_nodes_.insert(id);
+        selection_order_.assign(1, id);
+        selected_lookup_.clear();
+        selected_lookup_.insert(id);
+        active_node_ = id;
         node_mask_dirty_ = true;
         bumpGeneration();
     }
 
     void SelectionState::selectNodes(const std::span<const core::NodeId> ids) {
         std::unique_lock lock(mutex_);
-        selected_nodes_.clear();
-        selected_nodes_.insert(ids.begin(), ids.end());
+        selection_order_.clear();
+        selected_lookup_.clear();
+        for (const auto id : ids) {
+            if (selected_lookup_.insert(id).second)
+                selection_order_.push_back(id);
+        }
+        active_node_ = selection_order_.empty() ? core::NULL_NODE : selection_order_.back();
         node_mask_dirty_ = true;
         bumpGeneration();
     }
 
     void SelectionState::addToSelection(const core::NodeId id) {
         std::unique_lock lock(mutex_);
-        selected_nodes_.insert(id);
+        if (selected_lookup_.insert(id).second)
+            selection_order_.push_back(id);
+        active_node_ = id;
         node_mask_dirty_ = true;
         bumpGeneration();
     }
 
     void SelectionState::removeFromSelection(const core::NodeId id) {
         std::unique_lock lock(mutex_);
-        selected_nodes_.erase(id);
+        if (selected_lookup_.erase(id) > 0)
+            std::erase(selection_order_, id);
+        if (active_node_ == id)
+            active_node_ = selection_order_.empty() ? core::NULL_NODE : selection_order_.back();
         node_mask_dirty_ = true;
         bumpGeneration();
     }
 
     void SelectionState::clearNodeSelection() {
         std::unique_lock lock(mutex_);
-        selected_nodes_.clear();
+        selection_order_.clear();
+        selected_lookup_.clear();
+        active_node_ = core::NULL_NODE;
         node_mask_dirty_ = true;
         bumpGeneration();
     }
 
     bool SelectionState::isNodeSelected(const core::NodeId id) const {
         std::shared_lock lock(mutex_);
-        return selected_nodes_.contains(id);
+        return selected_lookup_.contains(id);
     }
 
-    const std::unordered_set<core::NodeId>& SelectionState::selectedNodeIds() const {
-        return selected_nodes_;
+    const std::vector<core::NodeId>& SelectionState::selectedNodeIds() const {
+        return selection_order_;
+    }
+
+    core::NodeId SelectionState::activeNode() const {
+        assert(active_node_ == core::NULL_NODE || selected_lookup_.contains(active_node_));
+        return active_node_;
+    }
+
+    core::NodeId SelectionState::activeNodeId() const {
+        std::shared_lock lock(mutex_);
+        return active_node_;
     }
 
     size_t SelectionState::selectedNodeCount() const {
         std::shared_lock lock(mutex_);
-        return selected_nodes_.size();
+        return selection_order_.size();
     }
 
     const std::vector<bool>& SelectionState::getNodeMask(const core::Scene& scene) const {
@@ -73,8 +98,8 @@ namespace lfs::vis {
             return cached_node_mask_;
 
         std::vector<std::string> names;
-        names.reserve(selected_nodes_.size());
-        for (const auto id : selected_nodes_) {
+        names.reserve(selection_order_.size());
+        for (const auto id : selection_order_) {
             const auto* node = scene.getNodeById(id);
             if (node)
                 names.push_back(node->name);

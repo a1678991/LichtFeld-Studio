@@ -17,6 +17,7 @@ namespace lfs::core {
     class SplatData;
     class Tensor;
     struct PointCloud;
+    struct MeshData;
 
     /**
      * @brief Apply a transformation matrix to SplatData
@@ -88,6 +89,17 @@ namespace lfs::core {
                                      glm::vec3& max_bounds,
                                      float padding = 0.0f,
                                      bool use_percentile = false);
+
+    /**
+     * @brief Compute the axis-aligned bounding box of mesh vertices
+     * @param mesh The mesh to compute bounds for
+     * @param[out] min_bounds Output minimum corner (x, y, z)
+     * @param[out] max_bounds Output maximum corner (x, y, z)
+     * @return true if bounds were computed successfully, false if mesh is empty/invalid
+     */
+    LFS_CORE_API bool compute_bounds(const MeshData& mesh,
+                                     glm::vec3& min_bounds,
+                                     glm::vec3& max_bounds);
 
     // Extract gaussians where mask is non-zero
     LFS_CORE_API SplatData extract_by_mask(const SplatData& splat_data, const Tensor& mask);

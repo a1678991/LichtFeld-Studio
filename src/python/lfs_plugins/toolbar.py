@@ -207,6 +207,7 @@ class _GizmoToolbarController:
     _PIVOT_LOCALE_KEYS = {
         "origin": "toolbar.origin_pivot",
         "bounds": "toolbar.bounds_center_pivot",
+        "individual": "toolbar.individual_origins_pivot",
     }
 
     _TRANSFORM_TOOL_IDS = {"builtin.translate", "builtin.rotate", "builtin.scale"}
@@ -214,7 +215,7 @@ class _GizmoToolbarController:
     _CROP_TOOL_ID = "builtin.cropbox"
     _HORIZONTAL_TOOL_IDS = {"builtin.select", _MIRROR_TOOL_ID, _CROP_TOOL_ID, *_TRANSFORM_TOOL_IDS}
     _TRANSFORM_SPACE_IDS = {"local": 0, "world": 1}
-    _PIVOT_IDS = {"origin": 0, "bounds": 1}
+    _PIVOT_IDS = {"origin": 0, "bounds": 1, "individual": 2}
     _CROP_OBJECT_SHAPES = ("box", "ellipsoid")
     _CROP_TRANSFORM_GIZMOS = ("translate", "rotate", "scale")
     _SELECTION_VOLUME_MODES = {"box", "sphere"}

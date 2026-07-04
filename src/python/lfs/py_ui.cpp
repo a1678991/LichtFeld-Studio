@@ -5160,9 +5160,9 @@ namespace lfs::python {
             },
             "Check if LichtFeld Studio is the default handler for .ply, .sog, .spz, .rad, .usd, .usda, .usdc, .usdz (Windows only)");
 
-        m.def("get_pivot_mode", &get_pivot_mode, "Get pivot mode (0=Origin, 1=Bounds)");
+        m.def("get_pivot_mode", &get_pivot_mode, "Get pivot mode (0=Origin, 1=Bounds, 2=Individual Origins)");
 
-        m.def("set_pivot_mode", &set_pivot_mode, nb::arg("mode"), "Set pivot mode (0=Origin, 1=Bounds)");
+        m.def("set_pivot_mode", &set_pivot_mode, nb::arg("mode"), "Set pivot mode (0=Origin, 1=Bounds, 2=Individual Origins)");
 
         m.def("get_transform_space", &get_transform_space, "Get transform space (0=Local, 1=World)");
 

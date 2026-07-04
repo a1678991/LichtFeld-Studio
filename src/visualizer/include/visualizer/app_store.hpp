@@ -140,6 +140,8 @@ namespace lfs::vis {
             ActiveSubmode,
             TransformSpaceValue,
             PivotModeValue,
+            TransformSkippedLockedTargetsValue,
+            TransformSkippedUnsupportedTargetsValue,
             ImportOverlayStateValue,
             VideoExportOverlayStateValue,
             ExportProgressStateValue,
@@ -177,6 +179,8 @@ namespace lfs::vis {
         lfs::core::reactive::Observable<std::string> active_submode;
         lfs::core::reactive::Observable<int> transform_space;
         lfs::core::reactive::Observable<int> pivot_mode;
+        lfs::core::reactive::Observable<int> transform_skipped_locked_targets;
+        lfs::core::reactive::Observable<int> transform_skipped_unsupported_targets;
         lfs::core::reactive::Observable<ImportOverlayState> import_overlay_state;
         lfs::core::reactive::Observable<VideoExportOverlayState> video_export_overlay_state;
         lfs::core::reactive::Observable<ExportProgressState> export_progress_state;
