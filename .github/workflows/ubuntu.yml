@@ -91,10 +91,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # /usr/local/cuda and its lib64 are symlinks, so find must follow them (-L).
           if [ -f /usr/local/cuda/include/cudnn.h ] && \
-             find /usr/local/cuda /usr/lib /usr/lib/x86_64-linux-gnu -name 'libcudnn.so*' -print -quit | grep -q .; then
+             find -L /usr/local/cuda /usr/lib /usr/lib/x86_64-linux-gnu -name 'libcudnn.so*' -print -quit | grep -q .; then
             echo "Using preinstalled cuDNN:"
-            find /usr/local/cuda /usr/lib /usr/lib/x86_64-linux-gnu -name 'libcudnn.so*' -print | head
+            find -L /usr/local/cuda /usr/lib /usr/lib/x86_64-linux-gnu -name 'libcudnn.so*' -print | head
             exit 0
           fi
 
@@ -102,16 +103,22 @@ jobs:
           CUDNN_URL="https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/cudnn-linux-x86_64-8.9.7.29_cuda12-archive.tar.xz"
           mkdir -p /tmp/cudnn-redist
           curl -L --retry 5 --retry-delay 10 "$CUDNN_URL" -o /tmp/cudnn.tar.xz
-          tar -xf /tmp/cudnn.tar.xz --strip-components=1 -C /tmp/cudnn-redist
+          # We link cuDNN dynamically, so extract only headers and shared libs; the
+          # static archives are multi-GB and unused. Drop the tarball and staging tree
+          # as soon as they are consumed to keep peak disk usage down.
+          tar -xf /tmp/cudnn.tar.xz --strip-components=1 -C /tmp/cudnn-redist --exclude='*.a'
+          rm -f /tmp/cudnn.tar.xz
           cp -a /tmp/cudnn-redist/include/. /usr/local/cuda/include/
           cp -a /tmp/cudnn-redist/lib/. /usr/local/cuda/lib64/
+          rm -rf /tmp/cudnn-redist
           ldconfig
           test -f /usr/local/cuda/include/cudnn.h
-          if ! find /usr/local/cuda/lib64 -name 'libcudnn.so*' -print -quit | grep -q .; then
+          if ! find -L /usr/local/cuda/lib64 -name 'libcudnn.so*' -print -quit | grep -q .; then
             echo "cuDNN library was not found after setup." >&2
             exit 1
           fi
-          find /usr/local/cuda/lib64 -name 'libcudnn.so*' -print | head
+          find -L /usr/local/cuda/lib64 -name 'libcudnn.so*' -print | head
+          df -h
 
       - name: Cache vcpkg tool
         id: cache-vcpkg-tool
