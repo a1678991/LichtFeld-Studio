@@ -121,8 +121,9 @@
       <div class="setting-row" data-tooltip="training.tooltip.depth_loss_mode" data-if="dep_depth_loss">
         <span class="prop-label">{{label_depth_loss_mode}}</span>
         <select data-value="depth_loss_mode_str">
-          <option value="pearson" data-tooltip="training.tooltip.opt.depth_loss_mode.pearson">{{label_depth_loss_pearson}}</option>
-          <option value="adaptive-warped-l1" data-tooltip="training.tooltip.opt.depth_loss_mode.adaptive_warped_l1">{{label_depth_loss_adaptive_warped_l1}}</option>
+          <option value="ssi" data-tooltip="training.tooltip.opt.depth_loss_mode.ssi">{{label_depth_loss_ssi}}</option>
+          <option value="ssi-disparity" data-tooltip="training.tooltip.opt.depth_loss_mode.ssi_disparity">{{label_depth_loss_ssi_disparity}}</option>
+          <option value="ssi-depth" data-tooltip="training.tooltip.opt.depth_loss_mode.ssi_depth">{{label_depth_loss_ssi_depth}}</option>
         </select>
       </div>
       <div class="setting-row" data-tooltip="training.tooltip.depth_loss_weight" data-if="dep_depth_loss">

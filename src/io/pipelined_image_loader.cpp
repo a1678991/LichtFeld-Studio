@@ -1424,8 +1424,12 @@ namespace lfs::io {
                 } else if (item.is_mask || item.is_depth) {
                     lfs::core::Tensor aux_tensor;
                     bool used_gpu = false;
+                    // nvimagecodec and the uint8 path truncate to 8 bits; 16-bit
+                    // depth priors must keep their precision.
+                    const bool depth_16bit =
+                        item.is_depth && stbi_is_16_bit(lfs::core::path_to_utf8(item.path).c_str());
 
-                    if (is_nvcodec_available()) {
+                    if (is_nvcodec_available() && !depth_16bit) {
                         try {
                             aux_tensor = nvcodec->load_image_gpu(
                                 item.path, item.params.resize_factor, item.params.max_width,
@@ -1436,9 +1440,37 @@ namespace lfs::io {
                     }
 
                     if (!used_gpu) {
-                        const auto [gray_data, src_w, src_h] = load_grayscale_stb(item.path);
-                        if (!gray_data)
-                            throw std::runtime_error(item.is_mask ? "Failed to decode mask" : "Failed to decode depth");
+                        int src_w = 0;
+                        int src_h = 0;
+                        lfs::core::Tensor gpu_gray;
+                        if (depth_16bit) {
+                            int channels = 0;
+                            stbi_us* const gray16 = stbi_load_16(
+                                lfs::core::path_to_utf8(item.path).c_str(), &src_w, &src_h, &channels, 1);
+                            if (!gray16)
+                                throw std::runtime_error("Failed to decode 16-bit depth");
+                            std::vector<float> gray_float(static_cast<size_t>(src_w) * src_h);
+                            constexpr float kInv16 = 1.0f / 65535.0f;
+                            for (size_t i = 0; i < gray_float.size(); ++i) {
+                                gray_float[i] = static_cast<float>(gray16[i]) * kInv16;
+                            }
+                            stbi_image_free(gray16);
+                            const auto cpu_tensor = lfs::core::Tensor::from_blob(
+                                gray_float.data(), lfs::core::TensorShape({static_cast<size_t>(src_h), static_cast<size_t>(src_w)}),
+                                lfs::core::Device::CPU, lfs::core::DataType::Float32);
+                            gpu_gray = cpu_tensor.to(lfs::core::Device::CUDA);
+                        } else {
+                            const auto [gray_data, w, h] = load_grayscale_stb(item.path);
+                            if (!gray_data)
+                                throw std::runtime_error(item.is_mask ? "Failed to decode mask" : "Failed to decode depth");
+                            src_w = w;
+                            src_h = h;
+                            const auto cpu_tensor = lfs::core::Tensor::from_blob(
+                                gray_data, lfs::core::TensorShape({static_cast<size_t>(src_h), static_cast<size_t>(src_w)}),
+                                lfs::core::Device::CPU, lfs::core::DataType::UInt8);
+                            gpu_gray = cpu_tensor.to(lfs::core::Device::CUDA);
+                            stbi_image_free(gray_data);
+                        }
 
                         int target_w = src_w;
                         int target_h = src_h;
@@ -1457,20 +1489,16 @@ namespace lfs::io {
                             }
                         }
 
-                        const auto cpu_tensor = lfs::core::Tensor::from_blob(
-                            gray_data, lfs::core::TensorShape({static_cast<size_t>(src_h), static_cast<size_t>(src_w)}),
-                            lfs::core::Device::CPU, lfs::core::DataType::UInt8);
-                        const auto gpu_uint8 = cpu_tensor.to(lfs::core::Device::CUDA);
-                        stbi_image_free(gray_data);
-
                         if (target_w != src_w || target_h != src_h) {
-                            aux_tensor = lfs::core::lanczos_resize_grayscale(gpu_uint8, target_h, target_w, 2, nullptr);
+                            aux_tensor = lfs::core::lanczos_resize_grayscale(gpu_gray, target_h, target_w, 2, nullptr);
+                        } else if (gpu_gray.dtype() == lfs::core::DataType::Float32) {
+                            aux_tensor = std::move(gpu_gray);
                         } else {
                             aux_tensor = lfs::core::Tensor::zeros(
                                 lfs::core::TensorShape({static_cast<size_t>(target_h), static_cast<size_t>(target_w)}),
                                 lfs::core::Device::CUDA, lfs::core::DataType::Float32);
                             cuda::launch_uint8_hw_to_float32_hw(
-                                gpu_uint8.ptr<uint8_t>(), aux_tensor.ptr<float>(), target_h, target_w, nullptr);
+                                gpu_gray.ptr<uint8_t>(), aux_tensor.ptr<float>(), target_h, target_w, nullptr);
                         }
                         cudaStreamSynchronize(nullptr);
                     }

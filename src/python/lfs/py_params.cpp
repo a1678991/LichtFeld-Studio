@@ -140,8 +140,8 @@ namespace lfs::python {
                         "depth_loss_weight", "Depth Loss Weight", 2.0f, 0.0f, 100.0f,
                         "Weight for depth supervision")
             .string_prop(&OptimizationParameters::depth_loss_mode,
-                         "depth_loss_mode", "Depth Loss Mode", "adaptive-warped-l1",
-                         "Depth supervision mode: pearson or adaptive-warped-l1")
+                         "depth_loss_mode", "Depth Loss Mode", "ssi",
+                         "Depth prior convention: ssi (auto-detect), ssi-disparity, or ssi-depth")
 
             // Bilateral grid
             .bool_prop(&OptimizationParameters::use_bilateral_grid,
@@ -1259,7 +1259,7 @@ namespace lfs::python {
                 "depth_loss_mode",
                 [](PyOptimizationParams& self) { return self.params().depth_loss_mode; },
                 [](PyOptimizationParams&, const std::string& v) { modify_params([v](auto& p) { p.depth_loss_mode = v; }); },
-                "Depth supervision mode: 'pearson' or 'adaptive-warped-l1'")
+                "Depth prior convention: 'ssi' (auto-detect), 'ssi-disparity', or 'ssi-depth'")
             .def_prop_rw(
                 "undistort",
                 [](PyOptimizationParams& self) { return self.params().undistort; },

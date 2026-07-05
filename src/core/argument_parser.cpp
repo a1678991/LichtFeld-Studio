@@ -287,7 +287,7 @@ namespace {
             ::args::Flag no_alpha_as_mask(mask_group, "no_alpha_as_mask", "Disable automatic alpha-as-mask for RGBA images", {"no-alpha-as-mask"});
             ::args::Flag use_depth_loss(mask_group, "use_depth_loss", "Load depth maps and enable depth-map supervision", {"use-depth-loss"});
             ::args::ValueFlag<float> depth_loss_weight(mask_group, "depth_loss_weight", "Depth loss weight (default: 2.0)", {"depth-loss-weight"});
-            ::args::ValueFlag<std::string> depth_loss_mode(mask_group, "depth_loss_mode", "Depth loss mode: pearson, adaptive-warped-l1 (default: adaptive-warped-l1)", {"depth-loss-mode"});
+            ::args::ValueFlag<std::string> depth_loss_mode(mask_group, "depth_loss_mode", "Depth prior convention: ssi (auto-detect), ssi-disparity, ssi-depth (default: ssi)", {"depth-loss-mode"});
 
             // =============================================================================
             // SPARSITY OPTIMIZATION

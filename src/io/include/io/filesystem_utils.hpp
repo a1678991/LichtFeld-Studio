@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -185,7 +186,46 @@ namespace lfs::io {
                     !inserted && it_basename->second != entry.path()) {
                     ambiguous_basenames_.insert(basename_key);
                 }
+
+                if (const std::string digit_key =
+                        trailing_digit_run(entry.path().stem().string());
+                    !digit_key.empty()) {
+                    if (auto [it_digits, inserted] =
+                            digit_entries_.emplace(digit_key, entry.path());
+                        !inserted && it_digits->second != entry.path()) {
+                        ambiguous_digits_.insert(digit_key);
+                    }
+                }
             }
+        }
+
+        // Trailing digit run of a filename stem ("RENDER_0042" -> "0042").
+        // Runs shorter than two digits are ignored to avoid accidental pairing.
+        [[nodiscard]] static std::string trailing_digit_run(const std::string& stem) {
+            size_t end = stem.size();
+            size_t begin = end;
+            while (begin > 0 && std::isdigit(static_cast<unsigned char>(stem[begin - 1]))) {
+                --begin;
+            }
+            if (end - begin < 2) {
+                return {};
+            }
+            return stem.substr(begin, end - begin);
+        }
+
+        // Frame-index fallback for sidecar files whose names share only the
+        // numeric suffix with the image (e.g. RENDER_0042.png / DEPTH_0042.png).
+        [[nodiscard]] FileLookupResult lookup_by_digit_suffix(const std::string& digit_key) const {
+            if (digit_key.empty()) {
+                return {};
+            }
+            if (ambiguous_digits_.contains(digit_key)) {
+                return FileLookupResult{LookupStatus::Ambiguous, {}};
+            }
+            if (auto it = digit_entries_.find(digit_key); it != digit_entries_.end()) {
+                return FileLookupResult{LookupStatus::Found, it->second};
+            }
+            return {};
         }
 
         [[nodiscard]] FileLookupResult lookup(const fs::path& relative_or_name) const {
@@ -223,6 +263,8 @@ namespace lfs::io {
         std::unordered_map<std::string, fs::path> exact_entries_;
         std::unordered_map<std::string, fs::path> basename_entries_;
         std::unordered_set<std::string> ambiguous_basenames_;
+        std::unordered_map<std::string, fs::path> digit_entries_;
+        std::unordered_set<std::string> ambiguous_digits_;
     };
 
     // Get standard COLMAP search paths for a base directory
@@ -370,12 +412,25 @@ namespace lfs::io {
                 }
             }
 
+            // Frame-number fallback. Ambiguity here means the convention does
+            // not apply (e.g. several sidecar kinds per frame), so it degrades
+            // to "no depth" instead of failing the dataset.
+            const std::string digit_key = RecursiveFileCache::trailing_digit_run(
+                lfs::core::utf8_to_path(image_name).stem().string());
+            for (const auto& dir_index : dir_indices_) {
+                if (auto result = dir_index.lookup_by_digit_suffix(digit_key); result.found()) {
+                    return result;
+                }
+            }
+
             if (saw_ambiguous_match) {
                 return FileLookupResult{LookupStatus::Ambiguous, {}};
             }
 
             return {};
         }
+
+        [[nodiscard]] bool has_depth_dirs() const { return !dir_indices_.empty(); }
 
         [[nodiscard]] fs::path find(const std::string& image_name) const {
             if (auto result = lookup(image_name); result.found()) {

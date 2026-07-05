@@ -30,7 +30,7 @@ namespace lfs::core {
     /**
      * High-quality Lanczos resampling for grayscale images on GPU
      *
-     * @param input Input tensor in [H, W] format (uint8)
+     * @param input Input tensor in [H, W] format (uint8, normalized to [0,1], or float32 passed through)
      * @param output_h Target height
      * @param output_w Target width
      * @param kernel_size Lanczos kernel size (typically 2 or 3)

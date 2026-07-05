@@ -128,6 +128,7 @@ namespace lfs::core {
             }
         }
 
+        template <typename TIn>
         __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
             LanczosResampleGrayscaleCUDA(
                 const int input_h, const int input_w,
@@ -135,8 +136,9 @@ namespace lfs::core {
                 const int kernel_size,
                 const float* __restrict__ pre_coef_x,
                 const float* __restrict__ pre_coef_y,
-                const uint8_t* __restrict__ input, // [H, W] uint8
-                float* __restrict__ output         // [H, W] float32
+                const TIn* __restrict__ input, // [H, W]
+                const float input_scale,       // 1/255 for uint8, 1 for float32
+                float* __restrict__ output     // [H, W] float32
             ) {
             const auto block = cg::this_thread_block();
             const uint32_t thread_idx_x = block.thread_index().x;
@@ -172,7 +174,7 @@ namespace lfs::core {
                     const uint32_t input_pix_id = input_w * y + x;
                     const float kernel_value_x = pre_coef_x[pix.x * coef_offset_step_x + x - LU.x];
                     const float kernel_value = kernel_value_y * kernel_value_x;
-                    const float pixel_value = (float)input[input_pix_id] / 255.0f;
+                    const float pixel_value = (float)input[input_pix_id] * input_scale;
                     accumulator += pixel_value * kernel_value;
                 }
             }
@@ -264,8 +266,8 @@ namespace lfs::core {
             return Tensor();
         }
 
-        if (input.dtype() != DataType::UInt8) {
-            LOG_ERROR("lanczos_resize_grayscale: Input must be UInt8 dtype");
+        if (input.dtype() != DataType::UInt8 && input.dtype() != DataType::Float32) {
+            LOG_ERROR("lanczos_resize_grayscale: Input must be UInt8 or Float32 dtype");
             return Tensor();
         }
 
@@ -301,14 +303,27 @@ namespace lfs::core {
         const dim3 tile_grid((output_w + BLOCK_X - 1) / BLOCK_X, (output_h + BLOCK_Y - 1) / BLOCK_Y);
         const dim3 block(BLOCK_X, BLOCK_Y, 1);
 
-        detail::LanczosResampleGrayscaleCUDA<<<tile_grid, block, 0, cuda_stream>>>(
-            input_h, input_w,
-            output_h, output_w,
-            kernel_size,
-            coef_x,
-            coef_y,
-            input.ptr<uint8_t>(),
-            output.ptr<float>());
+        if (input.dtype() == DataType::UInt8) {
+            detail::LanczosResampleGrayscaleCUDA<uint8_t><<<tile_grid, block, 0, cuda_stream>>>(
+                input_h, input_w,
+                output_h, output_w,
+                kernel_size,
+                coef_x,
+                coef_y,
+                input.ptr<uint8_t>(),
+                1.0f / 255.0f,
+                output.ptr<float>());
+        } else {
+            detail::LanczosResampleGrayscaleCUDA<float><<<tile_grid, block, 0, cuda_stream>>>(
+                input_h, input_w,
+                output_h, output_w,
+                kernel_size,
+                coef_x,
+                coef_y,
+                input.ptr<float>(),
+                1.0f,
+                output.ptr<float>());
+        }
 
         cudaFree(coef_x);
         cudaFree(coef_y);

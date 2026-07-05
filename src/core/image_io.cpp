@@ -547,6 +547,55 @@ namespace lfs::core {
 
     void free_image(unsigned char* img) { std::free(img); }
 
+    std::tuple<float*, int, int> load_image_gray_high_bitdepth(std::filesystem::path p) {
+        init_oiio();
+
+        const std::string path_utf8 = lfs::core::path_to_utf8(p);
+        ImageInputPtr in = open_image_input(path_utf8);
+        if (!in) {
+            return {nullptr, 0, 0};
+        }
+
+        const OIIO::ImageSpec& spec = in->spec();
+        if (spec.format == OIIO::TypeDesc::UINT8) {
+            return {nullptr, 0, 0};
+        }
+
+        const int w = spec.width;
+        const int h = spec.height;
+        auto* out = static_cast<float*>(std::malloc(sizeof(float) * static_cast<size_t>(w) * h));
+        if (!out) {
+            throw std::bad_alloc();
+        }
+
+        if (!in->read_image(0, 0, 0, 1, OIIO::TypeDesc::FLOAT, out)) {
+            std::free(out);
+            LOG_ERROR("load_image_gray_high_bitdepth: read failed for {}: {}", path_utf8, in->geterror());
+            return {nullptr, 0, 0};
+        }
+
+        return {out, w, h};
+    }
+
+    void free_image_float(float* img) { std::free(img); }
+
+    float image_quantization_step(const std::filesystem::path& p) {
+        init_oiio();
+
+        ImageInputPtr in = open_image_input(lfs::core::path_to_utf8(p));
+        if (!in) {
+            return 0.0f;
+        }
+        const OIIO::TypeDesc format = in->spec().format;
+        if (format == OIIO::TypeDesc::UINT8 || format == OIIO::TypeDesc::INT8) {
+            return 1.0f / 255.0f;
+        }
+        if (format == OIIO::TypeDesc::UINT16 || format == OIIO::TypeDesc::INT16) {
+            return 1.0f / 65535.0f;
+        }
+        return 0.0f;
+    }
+
     bool save_img_data(const std::filesystem::path& p, const std::tuple<unsigned char*, int, int, int>& image_data) {
         init_oiio(); // Assuming this initializes OIIO like in your load_image
 

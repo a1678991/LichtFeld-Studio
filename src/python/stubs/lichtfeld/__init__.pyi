@@ -2072,7 +2072,9 @@ class OptimizationParams:
 
     @property
     def depth_loss_mode(self) -> str:
-        """Depth supervision mode: 'pearson' or 'adaptive-warped-l1'"""
+        """
+        Depth prior convention: 'ssi' (auto-detect), 'ssi-disparity', or 'ssi-depth'
+        """
 
     @depth_loss_mode.setter
     def depth_loss_mode(self, arg: str, /) -> None: ...

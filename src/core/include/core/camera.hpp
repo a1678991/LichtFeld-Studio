@@ -65,6 +65,16 @@ namespace lfs::core {
         // Load depth map from disk, convert to [H,W] float32 [0,1], and return it (cached)
         Tensor load_and_get_depth(int resize_factor = -1, int max_width = 0);
 
+        // Quantization step of the depth prior's file encoding in target units
+        // (1/255 for 8-bit, 1/65535 for 16-bit, 0 for float). Header probe on
+        // first call, cached.
+        float depth_prior_quantization_step();
+
+        void release_depth_cache() {
+            _cached_depth = Tensor();
+            _depth_loaded = false;
+        }
+
         // Attach an in-memory mask (skips file load). Expected (H,W) or
         // (1,H,W) at the image's on-disk resolution; dtype uint8 [0,255] or
         // float32 [0,1]. Lazily processed on the next load_and_get_mask call.
@@ -195,6 +205,7 @@ namespace lfs::core {
         // Depth caching (processed depth stored on GPU)
         Tensor _cached_depth;
         bool _depth_loaded = false;
+        float _depth_quantization_step = -1.0f;
 
         // Undistortion state
         bool _undistort_precomputed = false;

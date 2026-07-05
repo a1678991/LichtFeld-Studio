@@ -3,11 +3,13 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/camera.hpp"
+#include "core/cuda/lanczos_resize/lanczos_resize.hpp"
 #include "core/cuda/undistort/undistort.hpp"
 #include "core/image_io.hpp"
 #include "core/image_loader.hpp"
 #include "core/logger.hpp"
 #include "core/tensor/internal/memory_pool.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cuda_runtime.h>
 
@@ -161,6 +163,7 @@ namespace lfs::core {
           _in_memory_mask_raw(std::move(other._in_memory_mask_raw)),
           _cached_depth(std::move(other._cached_depth)),
           _depth_loaded(other._depth_loaded),
+          _depth_quantization_step(other._depth_quantization_step),
           _undistort_precomputed(other._undistort_precomputed),
           _undistort_prepared(other._undistort_prepared),
           _undistort_params(other._undistort_params),
@@ -210,6 +213,7 @@ namespace lfs::core {
             _in_memory_mask_raw = std::move(other._in_memory_mask_raw);
             _cached_depth = std::move(other._cached_depth);
             _depth_loaded = other._depth_loaded;
+            _depth_quantization_step = other._depth_quantization_step;
             _undistort_precomputed = other._undistort_precomputed;
             _undistort_prepared = other._undistort_prepared;
             _undistort_params = other._undistort_params;
@@ -492,25 +496,60 @@ namespace lfs::core {
             return Tensor();
         }
 
-        const ImageLoadParams params{
-            .path = _depth_path,
-            .resize_factor = resize_factor,
-            .max_width = max_width,
-            .stream = _stream};
-
-        Tensor depth = load_image_cached(params);
-
-        if (depth.device() != Device::CUDA) {
-            depth = depth.to(Device::CUDA, _stream);
+        Tensor depth;
+        if (auto [gray, native_w, native_h] = load_image_gray_high_bitdepth(_depth_path); gray) {
+            auto cpu_depth = Tensor::from_blob(
+                gray,
+                TensorShape({static_cast<size_t>(native_h), static_cast<size_t>(native_w)}),
+                Device::CPU, DataType::Float32);
+            depth = cpu_depth.to(Device::CUDA, _stream);
             if (_stream) {
                 cudaStreamSynchronize(_stream);
             }
-        }
+            free_image_float(gray);
 
-        if (depth.dtype() == DataType::UInt8) {
-            depth = depth.to(DataType::Float32).div(255.0f);
-        } else if (depth.dtype() != DataType::Float32) {
-            depth = depth.to(DataType::Float32);
+            int target_w = native_w;
+            int target_h = native_h;
+            if (resize_factor > 1) {
+                target_w /= resize_factor;
+                target_h /= resize_factor;
+            }
+            if (max_width > 0 && (target_w > max_width || target_h > max_width)) {
+                if (target_w > target_h) {
+                    target_h = std::max(1, max_width * target_h / target_w);
+                    target_w = max_width;
+                } else {
+                    target_w = std::max(1, max_width * target_w / target_h);
+                    target_h = max_width;
+                }
+            }
+            if (target_w != native_w || target_h != native_h) {
+                depth = lanczos_resize_grayscale(depth, target_h, target_w, 2, _stream);
+                if (_stream) {
+                    cudaStreamSynchronize(_stream);
+                }
+            }
+        } else {
+            const ImageLoadParams params{
+                .path = _depth_path,
+                .resize_factor = resize_factor,
+                .max_width = max_width,
+                .stream = _stream};
+
+            depth = load_image_cached(params);
+
+            if (depth.device() != Device::CUDA) {
+                depth = depth.to(Device::CUDA, _stream);
+                if (_stream) {
+                    cudaStreamSynchronize(_stream);
+                }
+            }
+
+            if (depth.dtype() == DataType::UInt8) {
+                depth = depth.to(DataType::Float32).div(255.0f);
+            } else if (depth.dtype() != DataType::Float32) {
+                depth = depth.to(DataType::Float32);
+            }
         }
 
         // Convert RGB [C,H,W] to grayscale [H,W].
@@ -539,6 +578,13 @@ namespace lfs::core {
         LOG_DEBUG("Loaded depth for {}: [{},{}]", _image_name, _cached_depth.shape()[0], _cached_depth.shape()[1]);
 
         return _cached_depth;
+    }
+
+    float Camera::depth_prior_quantization_step() {
+        if (_depth_quantization_step < 0.0f) {
+            _depth_quantization_step = has_depth() ? image_quantization_step(_depth_path) : 0.0f;
+        }
+        return _depth_quantization_step;
     }
 
     void Camera::precompute_undistortion(float blank_pixels) {

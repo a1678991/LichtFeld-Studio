@@ -13,6 +13,7 @@
 #include "core/parameters.hpp"
 #include "core/tensor.hpp"
 #include "dataset.hpp"
+#include "kernels/depth_loss.hpp"
 #include "lfs/kernels/ssim.cuh"
 #include "losses/photometric_loss.hpp"
 #include "metrics/metrics.hpp"
@@ -450,7 +451,13 @@ namespace lfs::training {
         core::Tensor loss_accumulator_;
         core::Tensor depth_loss_scalar_;
         core::Tensor depth_loss_grad_;
+        core::Tensor depth_loss_grad_alpha_;
+        core::Tensor depth_loss_error_map_;
         core::Tensor depth_loss_partials_;
+        std::unordered_map<int, lfs::training::kernels::DepthAnchor> depth_anchors_;
+        bool depth_anchor_fit_attempted_ = false;
+        lfs::training::kernels::DepthPriorType resolved_depth_prior_ =
+            lfs::training::kernels::DepthPriorType::Auto;
 
         // Pre-allocated SSIM-map workspace for densification error maps.
         lfs::training::kernels::SSIMMapWorkspace densification_ssim_workspace_;
@@ -537,6 +544,7 @@ namespace lfs::training {
         void destroySyncPrimitives();
         void recordParamsReady();
         void waitForModelReaders();
+        void fitDepthAnchors(size_t cameras_with_depth);
 
         // Async loss readback: the periodic loss sample is copied D2H into a
         // small pinned ring and polled on later iterations instead of stalling

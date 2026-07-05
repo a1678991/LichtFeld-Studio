@@ -62,11 +62,11 @@ class TestOptimizationParams:
 
         try:
             params.use_depth_loss = True
-            params.depth_loss_mode = "adaptive-warped-l1"
+            params.depth_loss_mode = "ssi-depth"
             params.depth_loss_weight = 3.25
 
             assert params.use_depth_loss is True
-            assert params.depth_loss_mode == "adaptive-warped-l1"
+            assert params.depth_loss_mode == "ssi-depth"
             assert params.depth_loss_weight == pytest.approx(3.25)
         finally:
             params.use_depth_loss = original_enabled

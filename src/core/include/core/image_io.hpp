@@ -38,6 +38,18 @@ namespace lfs::core {
 
     LFS_CORE_API void free_image(unsigned char* image);
 
+    // Loads channel 0 of a >8-bit image (16-bit PNG, float TIFF/EXR) at native
+    // resolution as float32; integer formats are normalized to [0,1].
+    // Returns {nullptr, 0, 0} for 8-bit files so callers use the uint8 path.
+    LFS_CORE_API std::tuple<float*, int, int>
+    load_image_gray_high_bitdepth(std::filesystem::path p);
+    LFS_CORE_API void free_image_float(float* image);
+
+    // Quantization step of the file's pixel encoding in normalized [0,1] units:
+    // 1/255 for 8-bit, 1/65535 for 16-bit, 0 for float formats or on failure.
+    // Header-only probe, does not decode pixels.
+    LFS_CORE_API float image_quantization_step(const std::filesystem::path& p);
+
 } // namespace lfs::core
 
 // Batch image saving functionality

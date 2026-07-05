@@ -1578,6 +1578,7 @@ namespace lfs::io {
         MaskDirCache mask_cache(base_path, options.cancel_requested);
         DepthDirCache depth_cache(base_path, options.cancel_requested);
         bool used_recursive_image_lookup = false;
+        size_t depth_matched_count = 0;
 
         // Accumulate camera positions for scene center
         std::vector<float> camera_positions;
@@ -1793,6 +1794,7 @@ namespace lfs::io {
             std::filesystem::path depth_path;
             if (auto depth_lookup = depth_cache.lookup(img.name); depth_lookup.found()) {
                 depth_path = std::move(depth_lookup.path);
+                ++depth_matched_count;
             } else if (depth_lookup.ambiguous()) {
                 return make_error(
                     ErrorCode::INVALID_DATASET,
@@ -1861,6 +1863,15 @@ namespace lfs::io {
         Tensor scene_center = scene_center_tensor.mean({0}, false);
 
         LOG_INFO("Training with {} images", cameras.size());
+        if (depth_cache.has_depth_dirs()) {
+            if (depth_matched_count == 0) {
+                LOG_WARN("Depth folder found but no depth map matched any of the {} images. "
+                         "Depth files must share the image filename or its trailing frame number.",
+                         cameras.size());
+            } else {
+                LOG_INFO("Depth maps matched for {}/{} images", depth_matched_count, cameras.size());
+            }
+        }
 
         return std::make_tuple(std::move(cameras), scene_center);
     }

@@ -246,6 +246,31 @@ TEST_F(ColmapImageLayoutTest, DepthDirCacheResolvesDepthsFolderAndDepthExtension
     EXPECT_TRUE(fs::equivalent(result.path, depth_path));
 }
 
+TEST_F(ColmapImageLayoutTest, DepthDirCacheFallsBackToTrailingFrameNumber) {
+    const fs::path dataset_dir = temp_dir_ / "dataset";
+    const fs::path depth_path = dataset_dir / "depth" / "DEPTH_0042.png";
+
+    write_png(depth_path);
+
+    const lfs::io::DepthDirCache cache(dataset_dir);
+    const auto result = cache.lookup("RENDER_0042.png");
+
+    ASSERT_TRUE(result.found());
+    EXPECT_TRUE(fs::equivalent(result.path, depth_path));
+}
+
+TEST_F(ColmapImageLayoutTest, DepthDirCacheFrameNumberFallbackSkipsAmbiguousMatches) {
+    const fs::path dataset_dir = temp_dir_ / "dataset";
+    write_png(dataset_dir / "depth" / "DEPTH_0042.png");
+    write_png(dataset_dir / "depth" / "CONF_0042.png");
+
+    const lfs::io::DepthDirCache cache(dataset_dir);
+    const auto result = cache.lookup("RENDER_0042.png");
+
+    EXPECT_FALSE(result.found());
+    EXPECT_FALSE(result.ambiguous());
+}
+
 TEST_F(ColmapImageLayoutTest, ResolvesDuplicateNestedImagesAndMasksByRelativePath) {
     const fs::path dataset_dir = temp_dir_ / "dataset";
     const fs::path image_a = dataset_dir / "images" / "img1" / "frame_0001.png";

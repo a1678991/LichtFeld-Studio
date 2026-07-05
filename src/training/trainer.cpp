@@ -11,6 +11,7 @@
 #include "control/command_api.hpp"
 #include "control/control_boundary.hpp"
 #include "core/checkpoint_format.hpp"
+#include "core/cuda/lanczos_resize/lanczos_resize.hpp"
 #include "core/cuda/memory_arena.hpp"
 #include "core/events.hpp"
 #include "core/image_io.hpp"
@@ -44,6 +45,8 @@
 #include "training/kernels/mrnf_kernels.hpp"
 #include "training/training_setup.hpp"
 
+#include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -162,26 +165,76 @@ namespace lfs::training {
             return static_cast<int>(parsed);
         }
 
-        [[nodiscard]] kernels::DepthLossMode depth_loss_mode_from_name(const std::string_view mode) {
-            if (mode == "adaptive-warped-l1") {
-                return kernels::DepthLossMode::AdaptiveWarpedL1;
+        constexpr float kDepthLossFinalScale = 0.02f;
+        constexpr float kDepthLossGradientTermWeight = 1.0f;
+
+        [[nodiscard]] kernels::DepthPriorType depth_prior_from_mode(const std::string_view mode) {
+            if (mode == "ssi-disparity") {
+                return kernels::DepthPriorType::Disparity;
             }
-            if (mode == "pearson") {
-                return kernels::DepthLossMode::PearsonAbs;
+            if (mode == "ssi-depth") {
+                return kernels::DepthPriorType::Depth;
             }
-            LOG_WARN("Unknown depth loss mode '{}'; using adaptive-warped-l1", mode);
-            return kernels::DepthLossMode::AdaptiveWarpedL1;
+            if (mode != "ssi" && !mode.empty()) {
+                LOG_WARN("Legacy depth loss mode '{}'; using scale-shift-invariant depth loss with automatic prior detection", mode);
+            }
+            return kernels::DepthPriorType::Auto;
         }
 
-        [[nodiscard]] const char* depth_loss_mode_name(const kernels::DepthLossMode mode) {
-            switch (mode) {
-            case kernels::DepthLossMode::AdaptiveWarpedL1:
-                return "adaptive-warped-l1";
-            case kernels::DepthLossMode::PearsonAbs:
+        [[nodiscard]] const char* depth_prior_name(const kernels::DepthPriorType prior) {
+            switch (prior) {
+            case kernels::DepthPriorType::Disparity:
+                return "ssi-disparity";
+            case kernels::DepthPriorType::Depth:
+                return "ssi-depth";
+            case kernels::DepthPriorType::Auto:
             default:
-                return "pearson";
+                return "ssi";
             }
         }
+
+        [[nodiscard]] const kernels::DepthAnchorCandidate* depth_anchor_candidate_for_prior(
+            const kernels::DepthAnchor& anchor,
+            const kernels::DepthPriorType prior) {
+            switch (prior) {
+            case kernels::DepthPriorType::Disparity:
+                return &anchor.disparity;
+            case kernels::DepthPriorType::Depth:
+                return &anchor.depth;
+            case kernels::DepthPriorType::Auto:
+            default:
+                return nullptr;
+            }
+        }
+
+        void select_depth_anchor_candidate(
+            kernels::DepthAnchor& anchor,
+            const kernels::DepthPriorType prior,
+            const kernels::DepthAnchorCandidate& candidate) {
+            anchor.valid = candidate.valid;
+            anchor.model = prior == kernels::DepthPriorType::Depth ? 1 : 0;
+            anchor.scale = candidate.scale;
+            anchor.shift = candidate.shift;
+            anchor.corr = candidate.corr;
+            anchor.samples = candidate.samples;
+        }
+
+        struct DepthAnchorCandidateStats {
+            size_t count = 0;
+            double abs_corr_sum = 0.0;
+
+            void add(const kernels::DepthAnchorCandidate& candidate) {
+                if (!candidate.valid) {
+                    return;
+                }
+                ++count;
+                abs_corr_sum += std::fabs(candidate.corr);
+            }
+
+            [[nodiscard]] double mean_abs_corr() const {
+                return count > 0 ? abs_corr_sum / static_cast<double>(count) : 0.0;
+            }
+        };
 
         [[nodiscard]] double bytes_to_mib(const size_t bytes) {
             return static_cast<double>(bytes) / BYTES_PER_MIB;
@@ -2014,6 +2067,216 @@ namespace lfs::training {
         }
     }
 
+    // Fits each camera's depth-prior alignment against the initial point
+    // cloud once, so the supervision target is absolute and multi-view
+    // consistent instead of chasing the current render.
+    void Trainer::fitDepthAnchors(const size_t cameras_with_depth) {
+        nvtxRangePush("fit_depth_anchors");
+        const auto fit_start = std::chrono::steady_clock::now();
+
+        depth_anchors_.clear();
+        depth_anchor_fit_attempted_ = false;
+        const auto configured_depth_prior = depth_prior_from_mode(params_.optimization.depth_loss_mode);
+        resolved_depth_prior_ = configured_depth_prior;
+        auto& model = strategy_->get_model();
+        const auto& means = model.means();
+        const auto num_points = static_cast<size_t>(model.size());
+        if (num_points == 0) {
+            LOG_WARN("Depth anchors: no initial point cloud available; depth loss will use render-fitted alignment");
+            nvtxRangePop();
+            return;
+        }
+        depth_anchor_fit_attempted_ = true;
+
+        // Robust world-space bounds of the anchor cloud: sparse reconstructions
+        // carry extreme outliers that poison the per-camera fits.
+        float aabb_lo[3] = {-std::numeric_limits<float>::infinity(),
+                            -std::numeric_limits<float>::infinity(),
+                            -std::numeric_limits<float>::infinity()};
+        float aabb_hi[3] = {std::numeric_limits<float>::infinity(),
+                            std::numeric_limits<float>::infinity(),
+                            std::numeric_limits<float>::infinity()};
+        {
+            const size_t bbox_stride = std::max<size_t>(1, num_points / 100000);
+            const auto means_cpu = means.cpu().contiguous();
+            const float* mp = means_cpu.ptr<float>();
+            std::array<std::vector<float>, 3> axis_vals;
+            for (auto& v : axis_vals) {
+                v.reserve(num_points / bbox_stride + 1);
+            }
+            for (size_t i = 0; i < num_points; i += bbox_stride) {
+                for (int k = 0; k < 3; ++k) {
+                    const float val = mp[i * 3 + k];
+                    if (std::isfinite(val)) {
+                        axis_vals[k].push_back(val);
+                    }
+                }
+            }
+            for (int k = 0; k < 3; ++k) {
+                auto& v = axis_vals[k];
+                if (v.size() < 100) {
+                    continue;
+                }
+                const size_t lo_idx = v.size() / 50;
+                const size_t hi_idx = v.size() - 1 - v.size() / 50;
+                std::nth_element(v.begin(), v.begin() + lo_idx, v.end());
+                const float lo = v[lo_idx];
+                std::nth_element(v.begin(), v.begin() + hi_idx, v.end());
+                const float hi = v[hi_idx];
+                const float margin = 0.5f * std::max(hi - lo, 1e-3f);
+                aabb_lo[k] = lo - margin;
+                aabb_hi[k] = hi + margin;
+            }
+        }
+
+        size_t processed = 0;
+        for (const auto& cam : train_dataset_->get_cameras()) {
+            if (!cam->has_depth()) {
+                continue;
+            }
+            ++processed;
+            auto prior = cam->load_and_get_depth(
+                params_.dataset.resize_factor,
+                params_.dataset.max_width);
+            if (!prior.is_valid() || prior.numel() == 0) {
+                continue;
+            }
+            if (prior.ndim() == 3 && prior.shape()[0] == 1) {
+                prior = prior.squeeze(0);
+            }
+            if (!prior.is_contiguous()) {
+                prior = prior.contiguous();
+            }
+            if (prior.ndim() != 2) {
+                cam->release_depth_cache();
+                continue;
+            }
+
+            const int prior_w = static_cast<int>(prior.shape()[1]);
+            const int prior_h = static_cast<int>(prior.shape()[0]);
+            const float sx = static_cast<float>(prior_w) / static_cast<float>(cam->camera_width());
+            const float sy = static_cast<float>(prior_h) / static_cast<float>(cam->camera_height());
+
+            // The prior's lazy ops materialize on their own stream; the fit
+            // reads raw pointers, so settle the device first (startup only).
+            prior.ptr<float>();
+            cudaDeviceSynchronize();
+
+            const auto anchor = lfs::training::kernels::fit_depth_anchor(
+                means.ptr<float>(),
+                num_points,
+                cam->world_view_transform_ptr(),
+                cam->focal_x() * sx,
+                cam->focal_y() * sy,
+                cam->center_x() * sx,
+                cam->center_y() * sy,
+                prior.ptr<float>(),
+                prior_w,
+                prior_h,
+                0.01f,
+                aabb_lo,
+                aabb_hi);
+            cam->release_depth_cache();
+
+            static const bool anchor_diag = env_flag_enabled("LFS_DEPTH_LOSS_DIAG");
+            if (anchor_diag) {
+                LOG_INFO("[DEPTH_ANCHOR] camera='{}' valid={} model={} scale={:.6f} shift={:.6f} floor={:.4f} corr={:.4f} samples={} disp_valid={} disp_corr={:.4f} depth_valid={} depth_corr={:.4f}",
+                         cam->image_name(), anchor.valid ? 1 : 0, anchor.model,
+                         anchor.scale, anchor.shift, anchor.floor, anchor.corr, anchor.samples,
+                         anchor.disparity.valid ? 1 : 0, anchor.disparity.corr,
+                         anchor.depth.valid ? 1 : 0, anchor.depth.corr);
+            }
+
+            if (anchor.disparity.valid || anchor.depth.valid) {
+                depth_anchors_[cam->uid()] = anchor;
+            }
+        }
+
+        DepthAnchorCandidateStats disparity_stats;
+        DepthAnchorCandidateStats depth_stats;
+        for (const auto& entry : depth_anchors_) {
+            disparity_stats.add(entry.second.disparity);
+            depth_stats.add(entry.second.depth);
+        }
+        if (configured_depth_prior == lfs::training::kernels::DepthPriorType::Auto) {
+            if (disparity_stats.count > 0 || depth_stats.count > 0) {
+                resolved_depth_prior_ =
+                    disparity_stats.abs_corr_sum >= depth_stats.abs_corr_sum
+                        ? lfs::training::kernels::DepthPriorType::Disparity
+                        : lfs::training::kernels::DepthPriorType::Depth;
+                LOG_INFO("Depth anchors: auto resolved dataset prior as {} "
+                         "(disparity: {} candidates, mean |corr| {:.3f}; depth: {} candidates, mean |corr| {:.3f})",
+                         depth_prior_name(resolved_depth_prior_),
+                         disparity_stats.count, disparity_stats.mean_abs_corr(),
+                         depth_stats.count, depth_stats.mean_abs_corr());
+            } else {
+                resolved_depth_prior_ = lfs::training::kernels::DepthPriorType::Auto;
+            }
+        }
+
+        size_t dropped_unusable = 0;
+        size_t dropped_sign = 0;
+        if (resolved_depth_prior_ != lfs::training::kernels::DepthPriorType::Auto) {
+            size_t positive = 0;
+            size_t negative = 0;
+            for (const auto& entry : depth_anchors_) {
+                const auto* candidate = depth_anchor_candidate_for_prior(entry.second, resolved_depth_prior_);
+                if (candidate == nullptr || !candidate->valid) {
+                    continue;
+                }
+                (candidate->scale > 0.0f ? positive : negative) += 1;
+            }
+            const bool filter_sign = positive != negative && (positive + negative) > 0;
+            const bool keep_positive = positive > negative;
+
+            for (auto it = depth_anchors_.begin(); it != depth_anchors_.end();) {
+                auto& anchor = it->second;
+                const auto* candidate = depth_anchor_candidate_for_prior(anchor, resolved_depth_prior_);
+                if (candidate == nullptr || !candidate->valid) {
+                    it = depth_anchors_.erase(it);
+                    ++dropped_unusable;
+                    continue;
+                }
+                if (filter_sign && ((candidate->scale > 0.0f) != keep_positive)) {
+                    it = depth_anchors_.erase(it);
+                    ++dropped_sign;
+                    continue;
+                }
+                select_depth_anchor_candidate(anchor, resolved_depth_prior_, *candidate);
+                ++it;
+            }
+            if (dropped_unusable > 0 || dropped_sign > 0) {
+                LOG_INFO("Depth anchors: dropped {} anchors without a {} fit and {} sign-inconsistent fits",
+                         dropped_unusable, depth_prior_name(resolved_depth_prior_), dropped_sign);
+            }
+        } else {
+            depth_anchors_.clear();
+        }
+
+        size_t reliable_anchors = 0;
+        double reliable_corr_sum = 0.0;
+        for (const auto& entry : depth_anchors_) {
+            const auto& anchor = entry.second;
+            ++reliable_anchors;
+            reliable_corr_sum += std::fabs(anchor.corr);
+        }
+
+        const auto fit_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - fit_start)
+                                .count();
+        if (reliable_anchors > 0) {
+            LOG_INFO("Depth anchors: {}/{} cameras aligned to the initial point cloud "
+                     "(mean |corr| {:.3f}, {} ms)",
+                     reliable_anchors, processed,
+                     reliable_corr_sum / static_cast<double>(reliable_anchors), fit_ms);
+        } else {
+            LOG_WARN("Depth anchors: no camera could be aligned to the initial point cloud "
+                     "({} cameras with depth); depth loss will be skipped for this anchored dataset",
+                     cameras_with_depth);
+        }
+        nvtxRangePop();
+    }
+
     bool Trainer::fillCameraLossColors(
         const std::vector<std::shared_ptr<const lfs::core::Camera>>& cameras,
         std::vector<std::array<float, 3>>& colors) const {
@@ -3683,6 +3946,7 @@ namespace lfs::training {
                     lfs::core::Tensor tile_grad_depth;
                     lfs::core::Tensor tile_error_map;
                     lfs::core::Tensor mask_tile;
+                    bool depth_error_map_ready = false;
 
                     // 1) Compute photometric loss (populates ssim_map in workspace)
                     const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None &&
@@ -3782,7 +4046,19 @@ namespace lfs::training {
                                 rendered_alpha = rendered_alpha.contiguous();
                             }
 
+                            const cudaStream_t depth_stream = rendered_depth.stream();
+
+                            if (target_depth.ndim() == 2 && rendered_depth.ndim() == 2 &&
+                                (target_depth.shape()[0] != rendered_depth.shape()[0] ||
+                                 target_depth.shape()[1] != rendered_depth.shape()[1])) {
+                                const int render_h = static_cast<int>(rendered_depth.shape()[0]);
+                                const int render_w = static_cast<int>(rendered_depth.shape()[1]);
+                                target_depth = lfs::core::lanczos_resize_grayscale(
+                                    target_depth, render_h, render_w, 2, depth_stream);
+                            }
+
                             const bool depth_shape_matches =
+                                target_depth.is_valid() &&
                                 target_depth.ndim() == 2 &&
                                 rendered_depth.ndim() == 2 &&
                                 rendered_alpha.ndim() == 2 &&
@@ -3795,9 +4071,20 @@ namespace lfs::training {
                                 const size_t num_depth_pixels = rendered_depth.numel();
                                 const size_t depth_partials =
                                     lfs::training::kernels::depth_loss_partial_count(num_depth_pixels);
-                                const cudaStream_t depth_stream = rendered_depth.stream();
-                                const auto depth_loss_mode =
-                                    depth_loss_mode_from_name(params_.optimization.depth_loss_mode);
+                                auto depth_prior =
+                                    depth_prior_from_mode(params_.optimization.depth_loss_mode);
+                                if (depth_anchor_fit_attempted_ &&
+                                    resolved_depth_prior_ != lfs::training::kernels::DepthPriorType::Auto) {
+                                    depth_prior = resolved_depth_prior_;
+                                }
+
+                                const int total_iterations =
+                                    std::max(1, params_.optimization.resolved_total_iterations());
+                                const float depth_progress =
+                                    std::min(static_cast<float>(iter) / static_cast<float>(total_iterations), 1.0f);
+                                const float depth_weight_now =
+                                    params_.optimization.depth_loss_weight *
+                                    std::pow(kDepthLossFinalScale, depth_progress);
 
                                 if (!depth_loss_scalar_.is_valid()) {
                                     depth_loss_scalar_ = lfs::core::Tensor::zeros({1}, lfs::core::Device::CUDA);
@@ -3808,59 +4095,109 @@ namespace lfs::training {
                                     depth_loss_grad_ = lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
                                 }
                                 depth_loss_grad_.set_stream(depth_stream);
+                                if (!depth_loss_grad_alpha_.is_valid() ||
+                                    depth_loss_grad_alpha_.shape() != rendered_depth.shape()) {
+                                    depth_loss_grad_alpha_ = lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
+                                }
+                                depth_loss_grad_alpha_.set_stream(depth_stream);
                                 if (!depth_loss_partials_.is_valid() ||
                                     depth_loss_partials_.shape()[0] != depth_partials) {
                                     depth_loss_partials_ = lfs::core::Tensor::empty({depth_partials}, lfs::core::Device::CUDA);
                                 }
                                 depth_loss_partials_.set_stream(depth_stream);
 
-                                lfs::training::kernels::launch_depth_loss(
-                                    rendered_depth.ptr<float>(),
-                                    rendered_alpha.ptr<float>(),
-                                    target_depth.ptr<float>(),
-                                    depth_loss_grad_.ptr<float>(),
-                                    depth_loss_scalar_.ptr<float>(),
-                                    depth_loss_partials_.ptr<float>(),
-                                    num_depth_pixels,
-                                    params_.optimization.depth_loss_weight,
-                                    depth_loss_mode,
-                                    depth_stream);
-
-                                static const bool depth_loss_diag = env_flag_enabled("LFS_DEPTH_LOSS_DIAG");
-                                static const int depth_loss_diag_interval =
-                                    env_int_or_default("LFS_DEPTH_LOSS_DIAG_INTERVAL", 50);
-                                if (depth_loss_diag && (iter == 1 || iter % depth_loss_diag_interval == 0)) {
-                                    const auto depth_grad_abs = depth_loss_grad_.abs();
-                                    const float valid_count = depth_loss_partials_.slice(0, 0, 1).item<float>();
-                                    const float scale_or_norm = depth_loss_partials_.slice(0, 3, 4).item<float>();
-                                    const float depth_corr = depth_loss_partials_.slice(0, 4, 5).item<float>();
-                                    const float valid_fraction = num_depth_pixels > 0
-                                                                     ? valid_count / static_cast<float>(num_depth_pixels)
-                                                                     : 0.0f;
-                                    LOG_INFO("[DEPTH_LOSS] iter={} mode={} camera='{}' loss={:.6f} corr={:.6f} scale_or_norm={:.6f} valid_pixels={:.0f} valid_fraction={:.3f} target_depth_min={:.6f} target_depth_max={:.6f} target_depth_mean={:.6f} depth_accum_min={:.6f} depth_accum_max={:.6f} depth_accum_mean={:.6f} alpha_accum_min={:.6f} alpha_accum_max={:.6f} alpha_accum_mean={:.6f} grad_depth_abs_max={:.6e} grad_depth_abs_mean={:.6e}",
-                                             iter,
-                                             depth_loss_mode_name(depth_loss_mode),
-                                             cam->image_name(),
-                                             depth_loss_scalar_.item<float>(),
-                                             depth_corr,
-                                             scale_or_norm,
-                                             valid_count,
-                                             valid_fraction,
-                                             target_depth.min().item<float>(),
-                                             target_depth.max().item<float>(),
-                                             target_depth.mean().item<float>(),
-                                             rendered_depth.min().item<float>(),
-                                             rendered_depth.max().item<float>(),
-                                             rendered_depth.mean().item<float>(),
-                                             rendered_alpha.min().item<float>(),
-                                             rendered_alpha.max().item<float>(),
-                                             rendered_alpha.mean().item<float>(),
-                                             depth_grad_abs.max().item<float>(),
-                                             depth_grad_abs.mean().item<float>());
+                                float* depth_error_ptr = nullptr;
+                                if (use_pixel_error_densification) {
+                                    if (!depth_loss_error_map_.is_valid() ||
+                                        depth_loss_error_map_.shape() != rendered_depth.shape()) {
+                                        depth_loss_error_map_ = lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
+                                    }
+                                    depth_loss_error_map_.set_stream(depth_stream);
+                                    depth_error_ptr = depth_loss_error_map_.ptr<float>();
                                 }
 
-                                tile_grad_depth = depth_loss_grad_;
-                                tile_loss = tile_loss + depth_loss_scalar_;
+                                const lfs::training::kernels::DepthAnchor* depth_anchor = nullptr;
+                                if (const auto anchor_it = depth_anchors_.find(cam->uid());
+                                    anchor_it != depth_anchors_.end()) {
+                                    depth_anchor = &anchor_it->second;
+                                }
+                                if (!(depth_anchor_fit_attempted_ && depth_anchor == nullptr)) {
+                                    const int depth_width = static_cast<int>(rendered_depth.shape()[1]);
+                                    const int depth_height = static_cast<int>(rendered_depth.shape()[0]);
+                                    const float depth_prior_qstep = cam->depth_prior_quantization_step();
+                                    lfs::training::kernels::launch_depth_loss(
+                                        rendered_depth.ptr<float>(),
+                                        rendered_alpha.ptr<float>(),
+                                        target_depth.ptr<float>(),
+                                        depth_loss_grad_.ptr<float>(),
+                                        depth_loss_grad_alpha_.ptr<float>(),
+                                        depth_error_ptr,
+                                        depth_loss_scalar_.ptr<float>(),
+                                        depth_loss_partials_.ptr<float>(),
+                                        depth_width,
+                                        depth_height,
+                                        depth_weight_now,
+                                        kDepthLossGradientTermWeight,
+                                        depth_prior,
+                                        depth_prior_qstep,
+                                        depth_anchor,
+                                        depth_stream);
+                                    depth_error_map_ready = depth_error_ptr != nullptr;
+
+                                    static const bool depth_loss_diag = env_flag_enabled("LFS_DEPTH_LOSS_DIAG");
+                                    static const int depth_loss_diag_interval =
+                                        env_int_or_default("LFS_DEPTH_LOSS_DIAG_INTERVAL", 50);
+                                    if (depth_loss_diag && (iter == 1 || iter % depth_loss_diag_interval == 0)) {
+                                        namespace slots = lfs::training::kernels::depth_loss_slots;
+                                        const auto slot = [&](const int s) {
+                                            return depth_loss_partials_.slice(0, s, s + 1).item<float>();
+                                        };
+                                        const auto depth_grad_abs = depth_loss_grad_.abs();
+                                        const auto alpha_grad_abs = depth_loss_grad_alpha_.abs();
+                                        const float valid_count = slot(slots::kCount);
+                                        const float valid_fraction = num_depth_pixels > 0
+                                                                         ? valid_count / static_cast<float>(num_depth_pixels)
+                                                                         : 0.0f;
+                                        LOG_INFO("[DEPTH_LOSS] iter={} prior={} anchored={} qstep={:.6f} camera='{}' loss={:.6f} weight={:.4f} valid={:.0f} model={} scale={:.6f} shift={:.6f} corr_disp={:.4f} corr_depth={:.4f} sigma_p={:.6f} floor={:.6f} mean_e={:.4f} valid_pixels={:.0f} valid_fraction={:.3f} grad_depth_abs_max={:.6e} grad_depth_abs_mean={:.6e} grad_alpha_abs_max={:.6e} grad_alpha_abs_mean={:.6e}",
+                                                 iter,
+                                                 depth_prior_name(depth_prior),
+                                                 depth_anchor != nullptr ? 1 : 0,
+                                                 depth_prior_qstep,
+                                                 cam->image_name(),
+                                                 depth_loss_scalar_.item<float>(),
+                                                 depth_weight_now,
+                                                 slot(slots::kValid),
+                                                 static_cast<int>(slot(slots::kModel)) == 0 ? "disparity" : "depth",
+                                                 slot(slots::kScale),
+                                                 slot(slots::kShift),
+                                                 slot(slots::kCorrDisparity),
+                                                 slot(slots::kCorrDepth),
+                                                 slot(slots::kSigmaP),
+                                                 slot(slots::kFloor),
+                                                 slot(slots::kMeanExpectedDepth),
+                                                 valid_count,
+                                                 valid_fraction,
+                                                 depth_grad_abs.max().item<float>(),
+                                                 depth_grad_abs.mean().item<float>(),
+                                                 alpha_grad_abs.max().item<float>(),
+                                                 alpha_grad_abs.mean().item<float>());
+                                    }
+
+                                    tile_grad_depth = depth_loss_grad_;
+                                    const bool depth_backward_handles_geometry =
+                                        fastgs_path && run_fastgs_gaussian_backward;
+                                    if (!depth_backward_handles_geometry) {
+                                        if (tile_grad_alpha.is_valid() && tile_grad_alpha.numel() > 0) {
+                                            auto existing_alpha_grad = tile_grad_alpha;
+                                            if (existing_alpha_grad.ndim() == 3 && existing_alpha_grad.shape()[0] == 1) {
+                                                existing_alpha_grad = existing_alpha_grad.squeeze(0);
+                                            }
+                                            depth_loss_grad_alpha_.add_(existing_alpha_grad);
+                                        }
+                                        tile_grad_alpha = depth_loss_grad_alpha_;
+                                    }
+                                    tile_loss = tile_loss + depth_loss_scalar_;
+                                }
                             } else {
                                 LOG_WARN("Skipping depth loss for '{}': rendered depth shape and target depth shape differ",
                                          cam->image_name());
@@ -3956,6 +4293,20 @@ namespace lfs::training {
                         lfs::training::kernels::launch_normalize_by_device_scalar(
                             tile_error_map.ptr<float>(), tile_error_map.numel(),
                             map_mean.ptr<float>(), 1e-6f);
+
+                        // Blend the depth residual as a second mean-normalized
+                        // signal: relative structure from both maps survives, and
+                        // a uniformly-wrong depth map cannot flatten the
+                        // photometric signal into grow-everywhere.
+                        if (depth_error_map_ready &&
+                            tile_error_map.shape() == depth_loss_error_map_.shape()) {
+                            const auto depth_map_mean = depth_loss_error_map_.mean();
+                            lfs::training::kernels::launch_normalize_by_device_scalar(
+                                depth_loss_error_map_.ptr<float>(), depth_loss_error_map_.numel(),
+                                depth_map_mean.ptr<float>(), 1e-6f);
+                            tile_error_map.add_(depth_loss_error_map_);
+                            tile_error_map.mul_(0.5f);
+                        }
                     }
 
                     if (live_vram_profiler_enabled()) {
@@ -4592,9 +4943,26 @@ namespace lfs::training {
                 params_.optimization.use_depth_loss &&
                 params_.optimization.depth_loss_weight > 0.0f;
             if (aux_pipeline_config.load_depths) {
-                LOG_INFO("Depth loss enabled (mode={}, weight={})",
-                         depth_loss_mode_name(depth_loss_mode_from_name(params_.optimization.depth_loss_mode)),
-                         params_.optimization.depth_loss_weight);
+                size_t cameras_with_depth = 0;
+                for (const auto& cam : train_dataset_->get_cameras()) {
+                    if (cam->has_depth()) {
+                        ++cameras_with_depth;
+                    }
+                }
+                LOG_INFO("Depth loss enabled (mode={}, weight={}, exponential decay to {:.0f}% by end of training)",
+                         depth_prior_name(depth_prior_from_mode(params_.optimization.depth_loss_mode)),
+                         params_.optimization.depth_loss_weight,
+                         kDepthLossFinalScale * 100.0f);
+                if (cameras_with_depth == 0) {
+                    LOG_WARN("Depth loss is enabled but none of the {} training cameras has a depth map — "
+                             "the depth loss will be inactive. Depth files go in <dataset>/depths (or depth/) "
+                             "named like the image or sharing its trailing frame number.",
+                             train_dataset_->get_cameras().size());
+                } else {
+                    LOG_INFO("Depth maps available for {}/{} training cameras",
+                             cameras_with_depth, train_dataset_->get_cameras().size());
+                    fitDepthAnchors(cameras_with_depth);
+                }
             }
             if (params_.optimization.mask_mode != lfs::core::param::MaskMode::None) {
                 aux_pipeline_config.invert_masks = params_.optimization.invert_masks;
