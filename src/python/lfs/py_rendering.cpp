@@ -35,7 +35,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <numbers>
 #include <variant>
@@ -53,7 +55,6 @@ namespace lfs::python {
         enum class PreviewReadback {
             FloatRgb,
             UInt8Rgb,
-            UInt8Rgba,
         };
 
         [[nodiscard]] std::optional<core::Tensor> viewportRenderImageHwc(
@@ -499,17 +500,7 @@ namespace lfs::python {
             }
 
             std::shared_ptr<core::Tensor> image;
-            if (readback == PreviewReadback::UInt8Rgba) {
-                image = rendering_manager->renderPreviewImageRgba8(
-                    scene_manager,
-                    rotation,
-                    translation,
-                    lfs::rendering::vFovToFocalLength(fov_degrees),
-                    width,
-                    height,
-                    orthographic_override,
-                    ortho_scale_override);
-            } else if (readback == PreviewReadback::UInt8Rgb) {
+            if (readback == PreviewReadback::UInt8Rgb) {
                 image = rendering_manager->renderPreviewImageRgb8(
                     scene_manager,
                     rotation,
@@ -1260,157 +1251,23 @@ namespace lfs::python {
             return toU8Hwc(std::move(*image));
         }
 
-        [[nodiscard]] core::Tensor renderCurrentViewRgba8(const vis::ViewInfo& view_info,
-                                                          const int width,
-                                                          const int height) {
-            auto image = renderViewThreadSafe(
-                viewInfoRotationMatrix(view_info),
-                glm::vec3{view_info.translation[0], view_info.translation[1], view_info.translation[2]},
-                width,
-                height,
-                view_info.fov,
-                PreviewReadback::UInt8Rgba,
-                std::nullopt,
-                view_info.orthographic,
-                scaledViewInfoOrthoScale(view_info, height));
-            if (!image || !image->is_valid()) {
-                throw std::runtime_error("transparent viewport export render failed");
-            }
-            return toU8Hwc(std::move(*image));
-        }
+        using ExportImageResult = std::expected<core::Tensor, std::string>;
 
-        [[nodiscard]] std::optional<core::Tensor> renderCurrentViewHdrComposite8(
-            const vis::ViewInfo& view_info,
-            const int width,
-            const int height) {
-            auto invoke_render = [&]() -> std::optional<core::Tensor> {
-                auto* const viewer = get_visualizer();
-                auto* const rendering_manager = viewer ? viewer->getRenderingManager() : nullptr;
-                auto* const scene_manager = viewer ? viewer->getSceneManager() : nullptr;
-                if (!rendering_manager || !scene_manager) {
-                    return std::nullopt;
-                }
-
-                const auto settings = rendering_manager->getSettings();
-                if (!vis::environmentBackgroundEnabled(settings)) {
-                    return std::nullopt;
-                }
-
-                auto* const engine = rendering_manager->getRenderingEngine();
-                if (!engine) {
-                    return std::nullopt;
-                }
-
-                const auto rotation = viewInfoRotationMatrix(view_info);
-                const glm::vec3 translation{
-                    view_info.translation[0],
-                    view_info.translation[1],
-                    view_info.translation[2]};
-                const float focal_length_mm = lfs::rendering::vFovToFocalLength(view_info.fov);
-                const auto ortho_scale_override = scaledViewInfoOrthoScale(view_info, height);
-                const float ortho_scale = ortho_scale_override.value_or(view_info.ortho_scale);
-
-                auto preview_image = rendering_manager->renderPreviewImageRgba8(
-                    scene_manager,
-                    rotation,
-                    translation,
-                    focal_length_mm,
-                    width,
-                    height,
-                    view_info.orthographic,
-                    ortho_scale_override);
-                rendering_manager->releasePreviewImageResources();
-
-                std::optional<lfs::rendering::GpuFrame> primary_frame;
-                if (preview_image && preview_image->is_valid()) {
-                    auto normalized_preview =
-                        (preview_image->to(core::DataType::Float32) * (1.0f / 255.0f)).contiguous();
-                    preview_image = std::make_shared<core::Tensor>(std::move(normalized_preview));
-                    preview_image = vis::applyViewportAppearanceCorrection(
-                        std::move(preview_image),
-                        scene_manager,
-                        settings,
-                        rendering_manager->getCurrentCameraId());
-                    auto frame = *preview_image;
-                    if (frame.dtype() != core::DataType::Float32) {
-                        frame = frame.to(core::DataType::Float32);
-                    }
-                    frame = frame.permute({2, 0, 1}).contiguous();
-                    if (frame.device() != core::Device::CUDA) {
-                        frame = frame.cuda();
-                    }
-                    auto frame_image = std::make_shared<core::Tensor>(std::move(frame));
-                    lfs::rendering::FrameMetadata metadata{
-                        .valid = true,
-                        .far_plane = settings.depth_clip_enabled
-                                         ? settings.depth_clip_far
-                                         : lfs::rendering::DEFAULT_FAR_PLANE,
-                        .orthographic = view_info.orthographic,
-                        .color_has_alpha = true};
-                    auto materialized = engine->materializeGpuFrame(
-                        frame_image,
-                        metadata,
-                        {width, height});
-                    if (!materialized || !materialized->valid()) {
-                        LOG_ERROR("Viewport export HDRI composite failed to materialize Gaussian frame: {}",
-                                  materialized ? "invalid frame" : materialized.error());
-                        return std::nullopt;
-                    }
-                    primary_frame = std::move(*materialized);
-                }
-
-                lfs::rendering::FrameView frame_view{
-                    .rotation = rotation,
-                    .translation = translation,
-                    .size = {width, height},
-                    .focal_length_mm = focal_length_mm,
-                    .near_plane = lfs::rendering::DEFAULT_NEAR_PLANE,
-                    .far_plane = settings.depth_clip_enabled
-                                     ? settings.depth_clip_far
-                                     : lfs::rendering::DEFAULT_FAR_PLANE,
-                    .orthographic = view_info.orthographic,
-                    .ortho_scale = ortho_scale,
-                    .background_color = settings.background_color};
-                lfs::rendering::ViewportData viewport{
-                    .rotation = frame_view.rotation,
-                    .translation = frame_view.translation,
-                    .size = frame_view.size,
-                    .focal_length_mm = frame_view.focal_length_mm,
-                    .orthographic = frame_view.orthographic,
-                    .ortho_scale = frame_view.ortho_scale};
-                lfs::rendering::VideoCompositeFrameRequest composite_request{
-                    .viewport = viewport,
-                    .frame_view = frame_view,
-                    .background_color = settings.background_color,
-                    .environment =
-                        {.enabled = true,
-                         .map_path = settings.environment_map_path,
-                         .exposure = settings.environment_exposure,
-                         .rotation_degrees = settings.environment_rotation_degrees,
-                         .equirectangular = settings.equirectangular},
-                    .meshes = {}};
-
-                auto composited = engine->renderVideoCompositeFrame(primary_frame, composite_request);
-                if (!composited) {
-                    LOG_ERROR("Viewport export HDRI composite failed: {}", composited.error());
-                    return std::nullopt;
-                }
-                return toU8Hwc(std::move(*composited));
-            };
-
+        [[nodiscard]] ExportImageResult runExportOnViewerThread(
+            std::function<ExportImageResult()> invoke_render) {
             auto* const viewer = get_visualizer();
             if (!viewer || viewer->isOnViewerThread()) {
                 return invoke_render();
             }
             if (!viewer->acceptsPostedWork()) {
-                return std::nullopt;
+                return std::unexpected("viewer is not accepting export work");
             }
 
-            auto promise = std::make_shared<std::promise<std::optional<core::Tensor>>>();
+            auto promise = std::make_shared<std::promise<ExportImageResult>>();
             auto future = promise->get_future();
             auto completed = std::make_shared<std::atomic_bool>(false);
 
-            auto finish = [promise, completed](std::optional<core::Tensor> result) mutable {
+            auto finish = [promise, completed](ExportImageResult result) mutable {
                 if (!completed->exchange(true)) {
                     promise->set_value(std::move(result));
                 }
@@ -1418,19 +1275,84 @@ namespace lfs::python {
 
             const bool posted = viewer->postWork(vis::Visualizer::WorkItem{
                 .run =
-                    [invoke_render, finish]() mutable {
+                    [invoke_render = std::move(invoke_render), finish]() mutable {
                         finish(invoke_render());
                     },
                 .cancel =
                     [finish]() mutable {
-                        finish(std::nullopt);
+                        finish(std::unexpected("viewport export was cancelled"));
                     }});
             if (!posted) {
-                return std::nullopt;
+                return std::unexpected("failed to post export work to the viewer");
             }
 
             nb::gil_scoped_release release;
             return future.get();
+        }
+
+        [[nodiscard]] core::Tensor renderCurrentViewExport(const vis::ViewInfo& view_info,
+                                                           const int width,
+                                                           const int height,
+                                                           const vis::ExportPostProcessMode mode) {
+            auto result = runExportOnViewerThread([&view_info, width, height, mode]() -> ExportImageResult {
+                auto* const viewer = get_visualizer();
+                auto* const rendering_manager = viewer ? viewer->getRenderingManager() : nullptr;
+                auto* const scene_manager = viewer ? viewer->getSceneManager() : nullptr;
+                if (!rendering_manager || !scene_manager) {
+                    return std::unexpected("no active viewer is available");
+                }
+                const vis::RenderingManager::ExportImageRequest request{
+                    .rotation = viewInfoRotationMatrix(view_info),
+                    .translation = {view_info.translation[0],
+                                    view_info.translation[1],
+                                    view_info.translation[2]},
+                    .focal_length_mm = lfs::rendering::vFovToFocalLength(view_info.fov),
+                    .width = width,
+                    .height = height,
+                    .orthographic_override = view_info.orthographic,
+                    .ortho_scale_override = scaledViewInfoOrthoScale(view_info, height),
+                    .mode = mode,
+                };
+                return rendering_manager->renderExportImage(scene_manager, request);
+            });
+            if (!result) {
+                throw std::runtime_error("viewport export failed: " + result.error());
+            }
+            return std::move(*result);
+        }
+
+        // Post-process for images assembled outside renderExportImage (the BW2A
+        // transparent fallback): applies the same PPISP correction path.
+        [[nodiscard]] core::Tensor applyExportPostProcessThreadSafe(core::Tensor image,
+                                                                    const vis::ExportPostProcessMode mode) {
+            auto result = runExportOnViewerThread(
+                [image = std::move(image), mode]() mutable -> ExportImageResult {
+                    auto* const viewer = get_visualizer();
+                    auto* const rendering_manager = viewer ? viewer->getRenderingManager() : nullptr;
+                    auto* const scene_manager = viewer ? viewer->getSceneManager() : nullptr;
+                    if (!rendering_manager || !scene_manager) {
+                        return std::unexpected("no active viewer is available");
+                    }
+                    const auto view_info = viewInfoForPanelArg("main");
+                    const vis::ExportPostProcessView view{
+                        .rotation = view_info ? viewInfoRotationMatrix(*view_info) : glm::mat3{1.0f},
+                        .focal_length_mm =
+                            view_info ? lfs::rendering::vFovToFocalLength(view_info->fov) : 0.0f,
+                        .equirectangular_view = rendering_manager->getSettings().equirectangular,
+                        .controller_predict_size =
+                            view_info ? glm::ivec2{view_info->width, view_info->height} : glm::ivec2{0, 0},
+                    };
+                    return vis::applyExportPostProcess(std::move(image),
+                                                       scene_manager,
+                                                       rendering_manager->getSettings(),
+                                                       rendering_manager->getCurrentCameraId(),
+                                                       mode,
+                                                       view);
+                });
+            if (!result) {
+                throw std::runtime_error("viewport export post-process failed: " + result.error());
+            }
+            return std::move(*result);
         }
 
         [[nodiscard]] core::Tensor recoverAlphaRgba(core::Tensor black_rgb, core::Tensor white_rgb) {
@@ -1795,7 +1717,8 @@ namespace lfs::python {
 
             if (transparent) {
                 try {
-                    image = renderCurrentViewRgba8(*view_info, target_width, target_height);
+                    image = renderCurrentViewExport(
+                        *view_info, target_width, target_height, vis::ExportPostProcessMode::Transparent);
                 } catch (const std::exception& e) {
                     LOG_DEBUG("transparent viewport export direct RGBA render failed, falling back to BW2A: {}", e.what());
                     auto black = renderCurrentViewRgb8(
@@ -1808,7 +1731,9 @@ namespace lfs::python {
                         target_width,
                         target_height,
                         std::optional<glm::vec3>{glm::vec3{1.0f}});
-                    image = recoverAlphaRgba(std::move(black), std::move(white));
+                    image = applyExportPostProcessThreadSafe(
+                        recoverAlphaRgba(std::move(black), std::move(white)),
+                        vis::ExportPostProcessMode::Transparent);
                 }
             } else {
                 const auto render_settings = vis::get_render_settings();
@@ -1817,18 +1742,12 @@ namespace lfs::python {
                     render_settings->environment_mode ==
                         static_cast<int>(vis::EnvironmentBackgroundMode::Equirectangular) &&
                     !render_settings->environment_map_path.empty();
-                if (export_hdr_environment) {
-                    auto composited = renderCurrentViewHdrComposite8(
-                        *view_info,
-                        target_width,
-                        target_height);
-                    if (!composited || !composited->is_valid()) {
-                        throw std::runtime_error("viewport HDRI export render failed");
-                    }
-                    image = std::move(*composited);
-                } else {
-                    image = renderCurrentViewRgb8(*view_info, target_width, target_height, std::nullopt);
-                }
+                image = renderCurrentViewExport(
+                    *view_info,
+                    target_width,
+                    target_height,
+                    export_hdr_environment ? vis::ExportPostProcessMode::EnvironmentComposite
+                                           : vis::ExportPostProcessMode::Opaque);
             }
         }
 

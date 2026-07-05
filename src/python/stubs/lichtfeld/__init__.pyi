@@ -2205,6 +2205,13 @@ class DatasetParams:
     def use_fs_cache(self, arg: bool, /) -> None: ...
 
     @property
+    def use_16bit_color(self) -> bool:
+        """Train with 16-bit color images (HDR); caches losslessly as JPEG 2000"""
+
+    @use_16bit_color.setter
+    def use_16bit_color(self, arg: bool, /) -> None: ...
+
+    @property
     def centralize_dataset(self) -> str:
         """
         Dataset centralization mode used for the last load: 'off', 'by_pointcloud', 'by_cameras'

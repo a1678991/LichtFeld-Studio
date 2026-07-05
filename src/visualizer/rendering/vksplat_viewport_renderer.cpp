@@ -5430,15 +5430,16 @@ namespace lfs::vis {
                     dst + ((static_cast<std::size_t>(destination_y + row) * dst_row_pixels +
                             static_cast<std::size_t>(destination_x)) *
                            dst_channels);
+                if (dst_channels == 4u) {
+                    std::memcpy(dst_row, src_row, src_row_pixels * 4u);
+                    continue;
+                }
                 for (int col = 0; col < output.size.x; ++col) {
                     const std::size_t src = static_cast<std::size_t>(col) * 4u;
                     const std::size_t dst_index = static_cast<std::size_t>(col) * dst_channels;
                     dst_row[dst_index] = src_row[src];
                     dst_row[dst_index + 1u] = src_row[src + 1u];
                     dst_row[dst_index + 2u] = src_row[src + 2u];
-                    if (dst_channels == 4u) {
-                        dst_row[dst_index + 3u] = src_row[src + 3u];
-                    }
                 }
             }
         }

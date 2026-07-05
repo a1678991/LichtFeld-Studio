@@ -394,6 +394,7 @@ add_subdirectory(src/training)   # Training module (lfs::training namespace)
 add_subdirectory(src/io)         # I/O module (lfs::io namespace)
 add_subdirectory(src/rendering)  # Rendering module (lfs::rendering namespace)
 add_subdirectory(src/sequencer)  # Sequencer module (lfs::sequencer namespace)
+add_subdirectory(src/preprocessing) # CLI preprocessing module (ONNXRuntime)
 add_subdirectory(src/visualizer) # Visualizer module (lfs::vis namespace)
 add_subdirectory(src/tcp)        # TCP event server (ZMQ responder + publisher)
 add_subdirectory(src/geometry)   # Geometry utilities
@@ -442,7 +443,7 @@ target_include_directories(${PROJECT_NAME}
 
 if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
     set(LFS_APP_INTERNAL_LINK_LIBS
-        "$<LINK_GROUP:RESCAN,lfs_visualizer,lfs_mcp,lfs_sequencer,lfs_rendering_tensor,lfs_training,lfs_geometry,lfs_core,lfs_io,lfs_video,fastlfs_backend,lfs_python_utils,lfs_tcp>"
+        "$<LINK_GROUP:RESCAN,lfs_visualizer,lfs_mcp,lfs_sequencer,lfs_rendering_tensor,lfs_training,lfs_preprocessing,lfs_geometry,lfs_core,lfs_io,lfs_video,fastlfs_backend,lfs_python_utils,lfs_tcp>"
     )
 else()
     set(LFS_APP_INTERNAL_LINK_LIBS
@@ -452,6 +453,7 @@ else()
         lfs_sequencer
         lfs_rendering_tensor
         lfs_training
+        lfs_preprocessing
         lfs_geometry
         lfs_core
         lfs_io
@@ -528,6 +530,27 @@ if(TARGET nvimgcodec)
     endif()
 
     message(STATUS "Post-build: nvImageCodec libraries will be copied to executable directory")
+endif()
+
+# ONNX Runtime dlopens its CUDA execution providers at runtime; vcpkg installs
+# those as shared libraries even on static triplets. Keep them beside the exe so
+# local and packaged preprocess runs do not silently fall back to CPU.
+file(GLOB _lfs_ort_provider_libs
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/*onnxruntime_providers_*"
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin/*onnxruntime_providers_*")
+list(FILTER _lfs_ort_provider_libs INCLUDE REGEX "\\.(dll|dylib|so(\\.[0-9]+)*)$")
+list(REMOVE_DUPLICATES _lfs_ort_provider_libs)
+if(_lfs_ort_provider_libs)
+    foreach(_lfs_ort_provider_lib IN LISTS _lfs_ort_provider_libs)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_lfs_ort_provider_lib}"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+            COMMENT "Copying ONNX Runtime provider library"
+        )
+    endforeach()
+else()
+    message(WARNING "ONNX Runtime provider libraries were not found; preprocess CUDA inference may fall back to CPU")
 endif()
 
 # Copy Python DLLs for Windows runtime (Python is embedded in the application)
@@ -954,6 +977,7 @@ configure_build_type(fastlfs_backend)
 configure_build_type(lfs_core)
 configure_build_type(lfs_core_cuda)
 configure_build_type(lfs_training)
+configure_build_type(lfs_preprocessing)
 configure_build_type(lfs_rendering_tensor)
 configure_build_type(lfs_rendering)
 configure_build_type(lfs_visualizer)
@@ -1070,6 +1094,9 @@ install(TARGETS lfs_mcp
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+if(_lfs_ort_provider_libs)
+    install(FILES ${_lfs_ort_provider_libs} DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION ".")
 
 set(INSTALL_RESOURCE_DIR "${CMAKE_INSTALL_DATADIR}/LichtFeld-Studio")
@@ -1207,6 +1234,9 @@ if(BUILD_PORTABLE)
     if(TARGET nvjpeg_ext)
         bundle_runtime_deps("$<TARGET_FILE:nvjpeg_ext>" TRUE)
     endif()
+    foreach(_lfs_ort_provider_lib IN LISTS _lfs_ort_provider_libs)
+        bundle_runtime_deps("${_lfs_ort_provider_lib}" TRUE)
+    endforeach()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         configure_file(
