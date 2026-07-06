@@ -1577,8 +1577,10 @@ namespace lfs::io {
         RecursiveFileCache image_cache(images_path, options.cancel_requested);
         MaskDirCache mask_cache(base_path, options.cancel_requested);
         DepthDirCache depth_cache(base_path, options.cancel_requested);
+        NormalDirCache normal_cache(base_path, options.cancel_requested);
         bool used_recursive_image_lookup = false;
         size_t depth_matched_count = 0;
+        size_t normal_matched_count = 0;
 
         // Accumulate camera positions for scene center
         std::vector<float> camera_positions;
@@ -1804,6 +1806,19 @@ namespace lfs::io {
                     base_path);
             }
 
+            std::filesystem::path normal_path;
+            if (auto normal_lookup = normal_cache.lookup(img.name); normal_lookup.found()) {
+                normal_path = std::move(normal_lookup.path);
+                ++normal_matched_count;
+            } else if (normal_lookup.ambiguous()) {
+                return make_error(
+                    ErrorCode::INVALID_DATASET,
+                    std::format("Normal map for image '{}' is ambiguous across the dataset normal folders. "
+                                "Keep normal maps in the same relative subdirectories as the images or rename them uniquely.",
+                                img.name),
+                    base_path);
+            }
+
             // Validate mask/depth dimensions match image dimensions
             std::optional<std::tuple<int, int, int>> image_info;
             auto get_image_info_cached = [&]() {
@@ -1834,6 +1849,17 @@ namespace lfs::io {
                                       depth_path);
                 }
             }
+            if (!normal_path.empty()) {
+                auto [img_w, img_h, img_c] = get_image_info_cached();
+                auto [normal_w, normal_h, normal_c] = lfs::core::get_image_info(normal_path);
+                if (img_w != normal_w || img_h != normal_h) {
+                    return make_error(ErrorCode::NORMAL_SIZE_MISMATCH,
+                                      std::format("Normal map '{}' is {}x{} but image '{}' is {}x{}",
+                                                  lfs::core::path_to_utf8(normal_path.filename()), normal_w, normal_h,
+                                                  img.name, img_w, img_h),
+                                      normal_path);
+                }
+            }
 
             // Create Camera
             auto camera = std::make_shared<Camera>(
@@ -1851,7 +1877,8 @@ namespace lfs::io {
                 cam_data.height,
                 static_cast<int>(i),
                 static_cast<int>(img.camera_id),
-                depth_path);
+                depth_path,
+                normal_path);
 
             camera->precompute_undistortion();
 
@@ -1870,6 +1897,15 @@ namespace lfs::io {
                          cameras.size());
             } else {
                 LOG_INFO("Depth maps matched for {}/{} images", depth_matched_count, cameras.size());
+            }
+        }
+        if (normal_cache.has_normal_dirs()) {
+            if (normal_matched_count == 0) {
+                LOG_WARN("Normal folder found but no normal map matched any of the {} images. "
+                         "Normal files must share the image filename or its trailing frame number.",
+                         cameras.size());
+            } else {
+                LOG_INFO("Normal maps matched for {}/{} images", normal_matched_count, cameras.size());
             }
         }
 

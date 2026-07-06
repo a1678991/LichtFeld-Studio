@@ -23,6 +23,8 @@
 
 #include "core/cuda/sh_layout.cuh"
 #include "training/kernels/depth_loss.hpp"
+#include "training/kernels/normal_consistency_loss.hpp"
+#include "training/kernels/normal_loss.hpp"
 #include "training/rasterization/gsplat/SphericalHarmonics.h"
 
 namespace {
@@ -2720,4 +2722,224 @@ TEST_F(AnalyticalGradientTest, CompleteBackwardChain) {
     std::cout << "quat_grad_mag: " << quat_ag.grad().abs().mean().item<float>() << std::endl;
     std::cout << "opacity_grad_mag: " << opacity_ag.grad().abs().mean().item<float>() << std::endl;
     std::cout << "sh_grad_mag: " << sh_ag.grad().abs().mean().item<float>() << std::endl;
+}
+
+// ============================================================================
+// Depth-normal consistency loss
+// ============================================================================
+
+namespace {
+
+    struct ConsistencyKernelResult {
+        torch::Tensor loss;
+        torch::Tensor grad_normal;
+        torch::Tensor grad_depth;
+        torch::Tensor grad_alpha;
+        torch::Tensor residual;
+        torch::Tensor partials;
+    };
+
+    ConsistencyKernelResult run_normal_consistency_kernel(
+        const torch::Tensor& rendered_normal, // [3,H,W]
+        const torch::Tensor& depth_accum,     // [H,W]
+        const torch::Tensor& alpha_accum,     // [H,W]
+        const float fx, const float fy, const float cx, const float cy,
+        const float weight) {
+        const auto opts = depth_accum.options();
+        const int height = static_cast<int>(depth_accum.size(0));
+        const int width = static_cast<int>(depth_accum.size(1));
+        const auto num_pixels = static_cast<size_t>(depth_accum.numel());
+
+        ConsistencyKernelResult result{
+            .loss = torch::empty({1}, opts),
+            .grad_normal = torch::zeros_like(rendered_normal),
+            .grad_depth = torch::zeros_like(depth_accum),
+            .grad_alpha = torch::zeros_like(depth_accum),
+            .residual = torch::empty_like(depth_accum),
+            .partials = torch::empty(
+                {static_cast<int64_t>(lfs::training::kernels::normal_consistency_partial_count(num_pixels))}, opts)};
+
+        lfs::training::kernels::launch_normal_consistency_loss(
+            rendered_normal.data_ptr<float>(),
+            depth_accum.data_ptr<float>(),
+            alpha_accum.data_ptr<float>(),
+            result.grad_normal.data_ptr<float>(),
+            result.grad_depth.data_ptr<float>(),
+            result.grad_alpha.data_ptr<float>(),
+            result.residual.data_ptr<float>(),
+            result.loss.data_ptr<float>(),
+            result.partials.data_ptr<float>(),
+            width,
+            height,
+            fx, fy, cx, cy,
+            weight);
+        EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+        return result;
+    }
+
+    // Mirrors the CUDA kernel: expected depth unprojected through the
+    // intrinsics, central-difference cross-product normal with a detached
+    // camera-facing sign, alpha-weighted cosine against the rendered normal.
+    // Gates, the alpha weighting, and the sum-alpha normalization are
+    // detached exactly like the kernel (finals-buffer constants).
+    torch::Tensor normal_consistency_reference(
+        const torch::Tensor& rendered_normal, // [3,H,W] autograd leaf
+        const torch::Tensor& depth_accum,     // [H,W] autograd leaf
+        const torch::Tensor& alpha_accum,     // [H,W] autograd leaf
+        const float fx, const float fy, const float cx, const float cy,
+        const float weight,
+        bool* valid_out = nullptr) {
+        namespace k = lfs::training::kernels;
+        const auto H = depth_accum.size(0);
+        const auto W = depth_accum.size(1);
+        const auto opts = depth_accum.options();
+
+        const auto grid_y = torch::arange(H, opts).view({H, 1}).expand({H, W});
+        const auto grid_x = torch::arange(W, opts).view({1, W}).expand({H, W});
+        const auto ray = torch::stack({(grid_x + 0.5f - cx) / fx,
+                                       (grid_y + 0.5f - cy) / fy,
+                                       torch::ones({H, W}, opts)},
+                                      2); // [H,W,3]
+
+        const auto alpha_safe = alpha_accum.clamp_min(1e-3f);
+        const auto E = depth_accum.clamp_min(0.0f) / alpha_safe;
+        const auto p = E.unsqueeze(2) * ray;
+
+        const auto shift = [](const torch::Tensor& t, const int dy, const int dx) {
+            return torch::roll(t, {dy, dx}, {0, 1});
+        };
+        const auto tx = shift(p, 0, -1) - shift(p, 0, 1);
+        const auto ty = shift(p, -1, 0) - shift(p, 1, 0);
+        const auto n_raw = torch::cross(tx, ty, 2);
+        const auto n_raw_norm = n_raw.norm(2, 2, true).clamp_min(1e-12f);
+        const auto facing = (n_raw.detach() * ray).sum(2);
+        const auto sign = torch::where(facing > 0.0f,
+                                       torch::full({H, W}, -1.0f, opts),
+                                       torch::ones({H, W}, opts));
+        const auto n_d = sign.unsqueeze(2) * n_raw / n_raw_norm;
+
+        const auto n_r = rendered_normal.permute({1, 2, 0}); // [H,W,3]
+        const auto n_r_norm = n_r.norm(2, 2, true).clamp_min(1e-6f);
+        const auto n_r_hat = n_r / n_r_norm;
+        const auto cos = (n_d * n_r_hat).sum(2);
+
+        // Detached gates mirroring load_sample
+        const auto E_d = E.detach();
+        const auto a_d = alpha_accum.detach();
+        const auto px_valid = (a_d >= k::kNormalConsistencyMinAlpha) & (E_d >= 1e-6f) & E_d.isfinite();
+        auto active = px_valid.clone();
+        const int shifts[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+        for (const auto& s : shifts) {
+            const auto En = shift(E_d, s[0], s[1]);
+            active = active & shift(px_valid, s[0], s[1]) &
+                     ((En - E_d).abs() <= k::kNormalConsistencyMaxRelDepthJump * E_d);
+        }
+        auto interior = torch::zeros({H, W}, opts.dtype(torch::kBool));
+        interior.index_put_({torch::indexing::Slice(1, H - 1), torch::indexing::Slice(1, W - 1)}, true);
+        active = active & interior &
+                 (n_r.detach().norm(2, 2) >= k::kNormalLossMinRenderNorm) &
+                 (n_raw.detach().norm(2, 2).square() >= 1e-24f);
+
+        const auto active_f = active.to(opts.dtype());
+        const double sum_alpha = (a_d * active_f).sum().item<double>();
+        const double count = active_f.sum().item<double>();
+        const bool valid = count >= k::kNormalConsistencyMinValidCount &&
+                           sum_alpha >= k::kNormalConsistencyMinValidWeight;
+        if (valid_out != nullptr) {
+            *valid_out = valid;
+        }
+        if (!valid) {
+            return torch::zeros({}, opts);
+        }
+        const float inv_norm = static_cast<float>(weight / std::max(sum_alpha, 1.0));
+        return inv_norm * (a_d * (1.0f - cos) * active_f).sum();
+    }
+
+} // namespace
+
+TEST_F(AnalyticalGradientTest, NormalConsistencyLossMatchesLibtorchAutograd) {
+    torch::manual_seed(7);
+    const int H = 32, W = 32;
+    const auto opts = torch::dtype(torch::kFloat32).device(torch::kCUDA);
+    const float fx = 40.0f, fy = 42.0f, cx = 15.5f, cy = 16.5f, weight = 0.05f;
+
+    // Smooth tilted surface with mild waviness; alpha solid with variation.
+    const auto grid_y = torch::arange(H, opts).view({H, 1}).expand({H, W});
+    const auto grid_x = torch::arange(W, opts).view({1, W}).expand({H, W});
+    const auto E = 3.0f + 0.01f * grid_x + 0.015f * grid_y +
+                   0.02f * torch::sin(0.4f * grid_x) * torch::cos(0.3f * grid_y);
+    const auto alpha = 0.7f + 0.25f * torch::rand({H, W}, opts);
+    const auto depth_accum = (E * alpha).contiguous();
+    auto rendered_normal = torch::randn({3, H, W}, opts);
+    rendered_normal = rendered_normal / rendered_normal.norm(2, 0, true).clamp_min(1e-6f);
+    rendered_normal = rendered_normal.contiguous();
+
+    auto normal_ag = rendered_normal.detach().clone().set_requires_grad(true);
+    auto depth_ag = depth_accum.detach().clone().set_requires_grad(true);
+    auto alpha_ag = alpha.detach().clone().set_requires_grad(true);
+    bool valid = false;
+    const auto expected_loss = normal_consistency_reference(
+        normal_ag, depth_ag, alpha_ag, fx, fy, cx, cy, weight, &valid);
+    ASSERT_TRUE(valid);
+    expected_loss.backward();
+
+    const auto result = run_normal_consistency_kernel(
+        rendered_normal, depth_accum, alpha, fx, fy, cx, cy, weight);
+
+    namespace slots = lfs::training::kernels::normal_consistency_slots;
+    ASSERT_GT(result.partials[slots::kValid].item<float>(), 0.5f);
+
+    EXPECT_TRUE(torch::allclose(result.loss, expected_loss.detach().reshape({1}), 2e-3f, 1e-7f))
+        << "loss mismatch: kernel=" << result.loss.item<float>()
+        << ", autograd=" << expected_loss.item<float>();
+    EXPECT_TRUE(tensors_close(result.grad_normal, normal_ag.grad(), 2e-3f, 1e-8f))
+        << "normal-gradient mismatch: " << max_rel_error(result.grad_normal, normal_ag.grad());
+    EXPECT_TRUE(tensors_close(result.grad_depth, depth_ag.grad(), 2e-3f, 1e-8f))
+        << "depth-gradient mismatch: " << max_rel_error(result.grad_depth, depth_ag.grad());
+    EXPECT_TRUE(tensors_close(result.grad_alpha, alpha_ag.grad(), 2e-3f, 1e-8f))
+        << "alpha-gradient mismatch: " << max_rel_error(result.grad_alpha, alpha_ag.grad());
+}
+
+TEST_F(AnalyticalGradientTest, NormalConsistencyPerfectPlaneGivesNearZeroLossAndGrads) {
+    const int H = 24, W = 24;
+    const auto opts = torch::dtype(torch::kFloat32).device(torch::kCUDA);
+    const float fx = 30.0f, fy = 30.0f, cx = 11.5f, cy = 11.5f, weight = 0.05f;
+
+    // Fronto-parallel plane: depth-derived normal is (0,0,-1) everywhere.
+    const auto alpha = torch::full({H, W}, 0.9f, opts);
+    const auto depth_accum = (torch::full({H, W}, 2.5f, opts) * alpha).contiguous();
+    auto rendered_normal = torch::zeros({3, H, W}, opts);
+    rendered_normal.index_put_({2}, -1.0f);
+    rendered_normal = rendered_normal.contiguous();
+
+    const auto result = run_normal_consistency_kernel(
+        rendered_normal, depth_accum, alpha, fx, fy, cx, cy, weight);
+
+    namespace slots = lfs::training::kernels::normal_consistency_slots;
+    ASSERT_GT(result.partials[slots::kValid].item<float>(), 0.5f);
+    EXPECT_GT(result.partials[slots::kMeanCos].item<float>(), 0.999f);
+    EXPECT_LT(result.loss.item<float>(), 1e-5f);
+    EXPECT_LT(result.grad_normal.abs().max().item<float>(), 1e-5f);
+    EXPECT_LT(result.grad_depth.abs().max().item<float>(), 1e-4f);
+    EXPECT_LT(result.grad_alpha.abs().max().item<float>(), 1e-4f);
+}
+
+TEST_F(AnalyticalGradientTest, NormalConsistencyTooFewValidPixelsDisables) {
+    const int H = 8, W = 8;
+    const auto opts = torch::dtype(torch::kFloat32).device(torch::kCUDA);
+    const auto alpha = torch::full({H, W}, 0.9f, opts);
+    const auto depth_accum = (torch::full({H, W}, 2.0f, opts) * alpha).contiguous();
+    auto rendered_normal = torch::zeros({3, H, W}, opts);
+    rendered_normal.index_put_({2}, -1.0f);
+    rendered_normal = rendered_normal.contiguous();
+
+    const auto result = run_normal_consistency_kernel(
+        rendered_normal, depth_accum, alpha, 10.0f, 10.0f, 3.5f, 3.5f, 0.05f);
+
+    namespace slots = lfs::training::kernels::normal_consistency_slots;
+    EXPECT_LT(result.partials[slots::kValid].item<float>(), 0.5f);
+    EXPECT_EQ(result.loss.item<float>(), 0.0f);
+    EXPECT_EQ(result.grad_normal.abs().max().item<float>(), 0.0f);
+    EXPECT_EQ(result.grad_depth.abs().max().item<float>(), 0.0f);
+    EXPECT_EQ(result.grad_alpha.abs().max().item<float>(), 0.0f);
 }

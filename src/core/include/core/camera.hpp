@@ -8,6 +8,7 @@
 #include "core/cuda/undistort/undistort.hpp"
 #include "core/export.hpp"
 #include "core/tensor.hpp"
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -39,7 +40,8 @@ namespace lfs::core {
                int camera_width, int camera_height,
                int uid,
                int camera_id = 0,
-               const std::filesystem::path& depth_path = {});
+               const std::filesystem::path& depth_path = {},
+               const std::filesystem::path& normal_path = {});
         Camera(const Camera&, const Tensor& transform);
 
         // Destructor to clean up CUDA stream
@@ -65,6 +67,23 @@ namespace lfs::core {
         // Load depth map from disk, convert to [H,W] float32 [0,1], and return it (cached)
         Tensor load_and_get_depth(int resize_factor = -1, int max_width = 0);
 
+        // Dataset-level normal-prior decode settings resolved by the trainer's
+        // startup probe. Must be consistent across calls (the cache stores the
+        // converted map).
+        struct NormalPriorDecode {
+            bool srgb = false;    // invert the sRGB display transform before decode
+            bool flip_yz = false; // OpenGL -> OpenCV camera convention
+            bool world_space = false;
+            // Prior-world -> reconstruction-world rotation (row-major); the
+            // camera's world-to-camera rotation is applied on top.
+            std::array<float, 9> world_rotation{1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+        };
+
+        // Load normal map from disk, decode unit normals as [3,H,W]
+        // float32 in [-1,1] (file encoding v = n*0.5+0.5), and return it (cached).
+        Tensor load_and_get_normal(int resize_factor, int max_width,
+                                   const NormalPriorDecode& decode);
+
         // Quantization step of the depth prior's file encoding in target units
         // (1/255 for 8-bit, 1/65535 for 16-bit, 0 for float). Header probe on
         // first call, cached.
@@ -73,6 +92,11 @@ namespace lfs::core {
         void release_depth_cache() {
             _cached_depth = Tensor();
             _depth_loaded = false;
+        }
+
+        void release_normal_cache() {
+            _cached_normal = Tensor();
+            _normal_loaded = false;
         }
 
         // Attach an in-memory mask (skips file load). Expected (H,W) or
@@ -129,6 +153,7 @@ namespace lfs::core {
         const std::filesystem::path& image_path() const noexcept { return _image_path; }
         const std::filesystem::path& mask_path() const noexcept { return _mask_path; }
         const std::filesystem::path& depth_path() const noexcept { return _depth_path; }
+        const std::filesystem::path& normal_path() const noexcept { return _normal_path; }
         bool has_in_memory_mask() const noexcept { return _in_memory_mask_raw.is_valid(); }
         bool has_mask() const noexcept {
             return has_in_memory_mask() ||
@@ -136,6 +161,9 @@ namespace lfs::core {
         }
         bool has_depth() const noexcept {
             return !_depth_path.empty() && std::filesystem::exists(_depth_path);
+        }
+        bool has_normal() const noexcept {
+            return !_normal_path.empty() && std::filesystem::exists(_normal_path);
         }
         bool has_alpha() const noexcept { return _has_alpha; }
         void set_has_alpha(bool v) noexcept { _has_alpha = v; }
@@ -184,6 +212,7 @@ namespace lfs::core {
         std::filesystem::path _image_path;
         std::filesystem::path _mask_path;
         std::filesystem::path _depth_path;
+        std::filesystem::path _normal_path;
         bool _has_alpha = false;
         CameraSplit _split = CameraSplit::Train;
         int _camera_width = 0;
@@ -206,6 +235,10 @@ namespace lfs::core {
         Tensor _cached_depth;
         bool _depth_loaded = false;
         float _depth_quantization_step = -1.0f;
+
+        // Normal caching (decoded camera-space normals stored on GPU)
+        Tensor _cached_normal;
+        bool _normal_loaded = false;
 
         // Undistortion state
         bool _undistort_precomputed = false;

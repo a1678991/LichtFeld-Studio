@@ -111,6 +111,10 @@ LOCALE_KEYS = {
     "use_depth_loss": "training_params.use_depth_loss",
     "depth_loss_mode": "training_params.depth_loss_mode",
     "depth_loss_weight": "training_params.depth_loss_weight",
+    "use_normal_loss": "training_params.use_normal_loss",
+    "normal_loss_weight": "training_params.normal_loss_weight",
+    "normal_consistency_weight": "training_params.normal_consistency_weight",
+    "normal_flatten_weight": "training_params.normal_flatten_weight",
     "sparsity": "training_params.sparsity",
     "gut": "training_params.gut",
     "undistort": "training_params.undistort",
@@ -218,6 +222,7 @@ PARAM_BOOL_PROPS = [
     "invert_masks",
     "use_alpha_as_mask",
     "use_depth_loss",
+    "use_normal_loss",
     "enable_sparsity",
     "gut",
     "undistort",
@@ -259,6 +264,9 @@ NUM_PROP_DEFS = [
     ("mask_opacity_penalty_power", float, "%.3f", 0.5, None, 0.1),
     ("mask_threshold", float, "%.3f", 0, 1, 0.05),
     ("depth_loss_weight", float, "%.3f", 0, 100, 0.1),
+    ("normal_loss_weight", float, "%.3f", 0, 100, 0.01),
+    ("normal_consistency_weight", float, "%.3f", 0, 100, 0.01),
+    ("normal_flatten_weight", float, "%.3f", 0, 1000, 0.1),
     ("opacity_reg", float, "%.4f", 0, None, 0.001),
     ("scale_reg", float, "%.4f", 0, None, 0.001),
     ("tv_loss_weight", float, "%.1f", 0, None, 0.5),
@@ -580,6 +588,10 @@ class TrainingPanel(Panel):
         model.bind_func(
             "dep_depth_loss",
             lambda: p() is not None and p().has_params() and p().use_depth_loss,
+        )
+        model.bind_func(
+            "dep_normal_loss",
+            lambda: p() is not None and p().has_params() and p().use_normal_loss,
         )
         model.bind_func(
             "dep_ppisp", lambda: p() is not None and p().has_params() and p().ppisp

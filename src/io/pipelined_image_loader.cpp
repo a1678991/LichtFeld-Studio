@@ -452,9 +452,11 @@ namespace lfs::io {
         s.output_image_bytes = gpu_stats.output_image_bytes;
         s.output_mask_bytes = gpu_stats.output_mask_bytes;
         s.output_depth_bytes = gpu_stats.output_depth_bytes;
+        s.output_normal_bytes = gpu_stats.output_normal_bytes;
         s.pending_image_bytes = gpu_stats.pending_image_bytes;
         s.pending_mask_bytes = gpu_stats.pending_mask_bytes;
         s.pending_depth_bytes = gpu_stats.pending_depth_bytes;
+        s.pending_normal_bytes = gpu_stats.pending_normal_bytes;
         return s;
     }
 
@@ -463,9 +465,11 @@ namespace lfs::io {
             .output_image_bytes = output_image_bytes_.load(std::memory_order_acquire),
             .output_mask_bytes = output_mask_bytes_.load(std::memory_order_acquire),
             .output_depth_bytes = output_depth_bytes_.load(std::memory_order_acquire),
+            .output_normal_bytes = output_normal_bytes_.load(std::memory_order_acquire),
             .pending_image_bytes = pending_image_bytes_.load(std::memory_order_acquire),
             .pending_mask_bytes = pending_mask_bytes_.load(std::memory_order_acquire),
             .pending_depth_bytes = pending_depth_bytes_.load(std::memory_order_acquire),
+            .pending_normal_bytes = pending_normal_bytes_.load(std::memory_order_acquire),
         };
     }
 
@@ -876,6 +880,9 @@ namespace lfs::io {
         if (ready.depth) {
             output_depth_bytes_.fetch_add(tensor_reserved_bytes(*ready.depth), std::memory_order_acq_rel);
         }
+        if (ready.normal) {
+            output_normal_bytes_.fetch_add(tensor_reserved_bytes(*ready.normal), std::memory_order_acq_rel);
+        }
     }
 
     void PipelinedImageLoader::release_output_ready_bytes(const ReadyImage& ready) {
@@ -886,12 +893,16 @@ namespace lfs::io {
         if (ready.depth) {
             subtract_clamped(output_depth_bytes_, tensor_reserved_bytes(*ready.depth));
         }
+        if (ready.normal) {
+            subtract_clamped(output_normal_bytes_, tensor_reserved_bytes(*ready.normal));
+        }
     }
 
     void PipelinedImageLoader::push_output_ready(ReadyImage ready) {
         const size_t image_bytes = tensor_reserved_bytes(ready.tensor);
         const size_t mask_bytes = ready.mask ? tensor_reserved_bytes(*ready.mask) : 0;
         const size_t depth_bytes = ready.depth ? tensor_reserved_bytes(*ready.depth) : 0;
+        const size_t normal_bytes = ready.normal ? tensor_reserved_bytes(*ready.normal) : 0;
         output_image_bytes_.fetch_add(image_bytes, std::memory_order_acq_rel);
         if (mask_bytes > 0) {
             output_mask_bytes_.fetch_add(mask_bytes, std::memory_order_acq_rel);
@@ -899,10 +910,14 @@ namespace lfs::io {
         if (depth_bytes > 0) {
             output_depth_bytes_.fetch_add(depth_bytes, std::memory_order_acq_rel);
         }
+        if (normal_bytes > 0) {
+            output_normal_bytes_.fetch_add(normal_bytes, std::memory_order_acq_rel);
+        }
         if (!output_queue_.push(std::move(ready))) {
             subtract_clamped(output_image_bytes_, image_bytes);
             subtract_clamped(output_mask_bytes_, mask_bytes);
             subtract_clamped(output_depth_bytes_, depth_bytes);
+            subtract_clamped(output_normal_bytes_, normal_bytes);
         }
     }
 
@@ -915,6 +930,7 @@ namespace lfs::io {
         subtract_clamped(pending_image_bytes_, it->second.image_bytes);
         subtract_clamped(pending_mask_bytes_, it->second.mask_bytes);
         subtract_clamped(pending_depth_bytes_, it->second.depth_bytes);
+        subtract_clamped(pending_normal_bytes_, it->second.normal_bytes);
         pending_pairs_.erase(it);
     }
 
@@ -922,9 +938,11 @@ namespace lfs::io {
         output_image_bytes_.store(0, std::memory_order_release);
         output_mask_bytes_.store(0, std::memory_order_release);
         output_depth_bytes_.store(0, std::memory_order_release);
+        output_normal_bytes_.store(0, std::memory_order_release);
         pending_image_bytes_.store(0, std::memory_order_release);
         pending_mask_bytes_.store(0, std::memory_order_release);
         pending_depth_bytes_.store(0, std::memory_order_release);
+        pending_normal_bytes_.store(0, std::memory_order_release);
     }
 
     void PipelinedImageLoader::try_push_ready_locked(const size_t sequence_id, PendingPairIterator it) {
@@ -932,10 +950,12 @@ namespace lfs::io {
         const bool image_ready = pair.image.has_value();
         const bool mask_has_value = pair.mask.has_value();
         const bool depth_has_value = pair.depth.has_value();
+        const bool normal_has_value = pair.normal.has_value();
         const bool mask_ready = !pair.mask_expected || mask_has_value;
         const bool depth_ready = !pair.depth_expected || depth_has_value;
+        const bool normal_ready = !pair.normal_expected || normal_has_value;
 
-        if (!image_ready || !mask_ready || !depth_ready) {
+        if (!image_ready || !mask_ready || !depth_ready || !normal_ready) {
             return;
         }
 
@@ -943,7 +963,8 @@ namespace lfs::io {
                          std::move(*pair.image),
                          mask_has_value ? std::optional(std::move(*pair.mask)) : std::nullopt,
                          pair.stream,
-                         depth_has_value ? std::optional(std::move(*pair.depth)) : std::nullopt};
+                         depth_has_value ? std::optional(std::move(*pair.depth)) : std::nullopt,
+                         normal_has_value ? std::optional(std::move(*pair.normal)) : std::nullopt};
         erase_pending_pair_locked(it);
         push_output_ready(std::move(ready));
 
@@ -955,6 +976,9 @@ namespace lfs::io {
         if (depth_has_value) {
             ++stats_.depths_loaded;
         }
+        if (normal_has_value) {
+            ++stats_.normals_loaded;
+        }
     }
 
     void PipelinedImageLoader::try_complete_pair(
@@ -962,7 +986,8 @@ namespace lfs::io {
         std::optional<lfs::core::Tensor> image,
         std::optional<lfs::core::Tensor> mask,
         cudaStream_t stream,
-        std::optional<lfs::core::Tensor> depth) {
+        std::optional<lfs::core::Tensor> depth,
+        std::optional<lfs::core::Tensor> normal) {
 
         std::lock_guard<std::mutex> lock(pending_pairs_mutex_);
         auto insert_result = pending_pairs_.try_emplace(sequence_id);
@@ -987,6 +1012,12 @@ namespace lfs::io {
             pair.depth_bytes = tensor_reserved_bytes(*pair.depth);
             pending_depth_bytes_.fetch_add(pair.depth_bytes, std::memory_order_acq_rel);
         }
+        if (normal) {
+            subtract_clamped(pending_normal_bytes_, pair.normal_bytes);
+            pair.normal = std::move(*normal);
+            pair.normal_bytes = tensor_reserved_bytes(*pair.normal);
+            pending_normal_bytes_.fetch_add(pair.normal_bytes, std::memory_order_acq_rel);
+        }
         if (stream)
             pair.stream = stream;
 
@@ -1007,6 +1038,7 @@ namespace lfs::io {
                 auto& pending = pending_pairs_[request.sequence_id];
                 pending.mask_expected = request.mask_path.has_value() || request.extract_alpha_as_mask;
                 pending.depth_expected = request.depth_path.has_value();
+                pending.normal_expected = request.normal_path.has_value();
             }
 
             auto fail_image_request = [&] {
@@ -1053,6 +1085,38 @@ namespace lfs::io {
                 depth_result.needs_processing = true;
                 depth_result.undistort = request.undistort;
                 cold_queue_.push(std::move(depth_result));
+            };
+
+            auto mark_normal_unavailable = [&] {
+                std::lock_guard<std::mutex> lock(pending_pairs_mutex_);
+                if (auto it = pending_pairs_.find(request.sequence_id); it != pending_pairs_.end()) {
+                    it->second.normal_expected = false;
+                    try_push_ready_locked(request.sequence_id, it);
+                }
+            };
+
+            auto enqueue_normal_request = [&] {
+                if (!request.normal_path) {
+                    return;
+                }
+                if (!is_regular_file_no_throw(*request.normal_path)) {
+                    LOG_DEBUG("[PipelinedImageLoader] Skipping missing normal {}", lfs::core::path_to_utf8(*request.normal_path));
+                    mark_normal_unavailable();
+                    return;
+                }
+
+                PrefetchedImage normal_result;
+                normal_result.sequence_id = request.sequence_id;
+                normal_result.path = *request.normal_path;
+                normal_result.params = request.params;
+                normal_result.is_normal = true;
+                normal_result.normal_flip_yz = request.normal_flip_yz;
+                normal_result.normal_srgb = request.normal_srgb;
+                normal_result.normal_transform_world_to_camera = request.normal_transform_world_to_camera;
+                normal_result.normal_world_to_camera = request.normal_world_to_camera;
+                normal_result.needs_processing = true;
+                normal_result.undistort = request.undistort;
+                cold_queue_.push(std::move(normal_result));
             };
 
             if (!is_regular_file_no_throw(request.path)) {
@@ -1103,6 +1167,7 @@ namespace lfs::io {
                     ++stats_.cold_path_misses;
                 }
                 enqueue_depth_request();
+                enqueue_normal_request();
                 continue;
             }
 
@@ -1233,6 +1298,7 @@ namespace lfs::io {
             }
 
             enqueue_depth_request();
+            enqueue_normal_request();
         }
     }
 
@@ -1324,12 +1390,14 @@ namespace lfs::io {
                             } catch (...) {
                                 // Clean up pending_pairs_ to prevent memory leak
                                 std::lock_guard<std::mutex> lock(pending_pairs_mutex_);
-                                if (item.is_mask || item.is_depth) {
+                                if (item.is_mask || item.is_depth || item.is_normal) {
                                     if (auto it = pending_pairs_.find(item.sequence_id); it != pending_pairs_.end()) {
                                         if (item.is_mask) {
                                             it->second.mask_expected = false;
-                                        } else {
+                                        } else if (item.is_depth) {
                                             it->second.depth_expected = false;
+                                        } else {
+                                            it->second.normal_expected = false;
                                         }
                                         try_push_ready_locked(item.sequence_id, it);
                                     }
@@ -1362,12 +1430,14 @@ namespace lfs::io {
                         } catch (...) {
                             // Clean up pending_pairs_ to prevent memory leak
                             std::lock_guard<std::mutex> lock(pending_pairs_mutex_);
-                            if (item.is_mask || item.is_depth) {
+                            if (item.is_mask || item.is_depth || item.is_normal) {
                                 if (auto it = pending_pairs_.find(item.sequence_id); it != pending_pairs_.end()) {
                                     if (item.is_mask) {
                                         it->second.mask_expected = false;
-                                    } else {
+                                    } else if (item.is_depth) {
                                         it->second.depth_expected = false;
+                                    } else {
+                                        it->second.normal_expected = false;
                                     }
                                     try_push_ready_locked(item.sequence_id, it);
                                 }
@@ -1618,6 +1688,101 @@ namespace lfs::io {
                         try_complete_pair(item.sequence_id, std::nullopt, std::nullopt, nullptr, std::move(aux_tensor));
                     }
 
+                } else if (item.is_normal) {
+                    const std::string path_utf8 = lfs::core::path_to_utf8(item.path);
+                    int src_w = 0;
+                    int src_h = 0;
+                    int channels = 0;
+                    std::vector<float> hwc;
+                    // nvimagecodec truncates to 8 bits; 16-bit normal priors
+                    // must keep their precision, so both paths decode on CPU.
+                    // Decode the v = n*0.5 + 0.5 file encoding (inverting the
+                    // sRGB display transform first when the startup probe
+                    // detected it); the loss re-normalizes per pixel, so
+                    // resampling shrinkage is fine.
+                    const bool srgb = item.normal_srgb;
+                    if (stbi_is_16_bit(path_utf8.c_str())) {
+                        stbi_us* const rgb16 = stbi_load_16(path_utf8.c_str(), &src_w, &src_h, &channels, 3);
+                        if (!rgb16)
+                            throw std::runtime_error("Failed to decode 16-bit normal map");
+                        hwc.resize(static_cast<size_t>(src_w) * src_h * 3);
+                        constexpr float kInv16 = 1.0f / 65535.0f;
+                        for (size_t i = 0; i < hwc.size(); ++i) {
+                            const float encoded = static_cast<float>(rgb16[i]) * kInv16;
+                            const float value = srgb ? lfs::core::srgb_encoding_to_linear(encoded) : encoded;
+                            hwc[i] = value * 2.0f - 1.0f;
+                        }
+                        stbi_image_free(rgb16);
+                    } else {
+                        stbi_uc* const rgb8 = stbi_load(path_utf8.c_str(), &src_w, &src_h, &channels, 3);
+                        if (!rgb8)
+                            throw std::runtime_error("Failed to decode normal map");
+                        hwc.resize(static_cast<size_t>(src_w) * src_h * 3);
+                        std::array<float, 256> lut;
+                        constexpr float kInv8 = 1.0f / 255.0f;
+                        for (int v = 0; v < 256; ++v) {
+                            const float encoded = static_cast<float>(v) * kInv8;
+                            const float value = srgb ? lfs::core::srgb_encoding_to_linear(encoded) : encoded;
+                            lut[v] = value * 2.0f - 1.0f;
+                        }
+                        for (size_t i = 0; i < hwc.size(); ++i) {
+                            hwc[i] = lut[rgb8[i]];
+                        }
+                        stbi_image_free(rgb8);
+                    }
+
+                    if (item.normal_flip_yz) {
+                        lfs::core::flip_normal_prior_yz_hwc(
+                            hwc.data(), static_cast<size_t>(src_w) * src_h);
+                    }
+                    if (item.normal_transform_world_to_camera) {
+                        lfs::core::transform_normal_prior_world_to_camera_hwc(
+                            hwc.data(), static_cast<size_t>(src_w) * src_h, item.normal_world_to_camera);
+                    }
+
+                    const auto cpu_tensor = lfs::core::Tensor::from_blob(
+                        hwc.data(),
+                        lfs::core::TensorShape({static_cast<size_t>(src_h), static_cast<size_t>(src_w), 3}),
+                        lfs::core::Device::CPU, lfs::core::DataType::Float32);
+                    auto normal_tensor = cpu_tensor.to(lfs::core::Device::CUDA)
+                                             .permute({2, 0, 1})
+                                             .contiguous();
+
+                    int target_w = src_w;
+                    int target_h = src_h;
+                    if (item.params.resize_factor > 1) {
+                        target_w /= item.params.resize_factor;
+                        target_h /= item.params.resize_factor;
+                    }
+                    const int max_w = item.params.max_width;
+                    if (max_w > 0 && (target_w > max_w || target_h > max_w)) {
+                        if (target_w > target_h) {
+                            target_h = std::max(1, max_w * target_h / target_w);
+                            target_w = max_w;
+                        } else {
+                            target_w = std::max(1, max_w * target_w / target_h);
+                            target_h = max_w;
+                        }
+                    }
+                    if (target_w != src_w || target_h != src_h) {
+                        normal_tensor = lfs::core::lanczos_resize_float_chw(normal_tensor, target_h, target_w, 2, nullptr);
+                    }
+
+                    if (item.undistort) {
+                        const auto scaled = lfs::core::scale_undistort_params(
+                            *item.undistort,
+                            static_cast<int>(normal_tensor.shape()[2]),
+                            static_cast<int>(normal_tensor.shape()[1]));
+                        normal_tensor = lfs::core::undistort_image(normal_tensor, scaled, nullptr);
+                    }
+
+                    normal_tensor = normal_tensor.contiguous();
+                    if (const cudaError_t err = cudaStreamSynchronize(nullptr); err != cudaSuccess) {
+                        throw std::runtime_error(std::string("CUDA sync failed: ") + cudaGetErrorString(err));
+                    }
+
+                    try_complete_pair(item.sequence_id, std::nullopt, std::nullopt, nullptr, std::nullopt, std::move(normal_tensor));
+
                 } else {
                     lfs::core::Tensor decoded;
                     bool used_gpu = false;
@@ -1717,16 +1882,18 @@ namespace lfs::io {
                         }
                         in_flight_.fetch_sub(1, std::memory_order_acq_rel);
                     }
-                } else if (item.is_mask || item.is_depth) {
+                } else if (item.is_mask || item.is_depth || item.is_normal) {
                     LOG_WARN("[PipelinedImageLoader] Cold process {} error {}: {} - continuing without it",
-                             item.is_mask ? "mask" : "depth",
+                             item.is_mask ? "mask" : (item.is_depth ? "depth" : "normal"),
                              lfs::core::path_to_utf8(item.path), message);
                     std::lock_guard<std::mutex> lock(pending_pairs_mutex_);
                     if (auto it = pending_pairs_.find(item.sequence_id); it != pending_pairs_.end()) {
                         if (item.is_mask) {
                             it->second.mask_expected = false;
-                        } else {
+                        } else if (item.is_depth) {
                             it->second.depth_expected = false;
+                        } else {
+                            it->second.normal_expected = false;
                         }
                         try_push_ready_locked(item.sequence_id, it);
                     }

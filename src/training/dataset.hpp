@@ -9,6 +9,7 @@
 #include "core/tensor.hpp"
 #include "io/pipelined_image_loader.hpp"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <format>
@@ -23,6 +24,32 @@
 #include <vector>
 
 namespace lfs::training {
+
+    // R_w2c premultiplied with the resolved prior-world -> reconstruction-world
+    // rotation, so the loader converts prior normals with one matrix.
+    inline std::array<float, 9> camera_world_to_camera_normal_matrix(
+        const lfs::core::Camera& cam,
+        const std::array<float, 9>& prior_world_rotation) {
+        std::array<float, 9> r_w2c{};
+        auto R_cpu = cam.R().cpu().contiguous();
+        auto R_acc = R_cpu.accessor<float, 2>();
+        for (size_t row = 0; row < 3; ++row) {
+            for (size_t col = 0; col < 3; ++col) {
+                r_w2c[row * 3 + col] = R_acc(row, col);
+            }
+        }
+        std::array<float, 9> result{};
+        for (size_t row = 0; row < 3; ++row) {
+            for (size_t col = 0; col < 3; ++col) {
+                float sum = 0.0f;
+                for (size_t k = 0; k < 3; ++k) {
+                    sum += r_w2c[row * 3 + k] * prior_world_rotation[k * 3 + col];
+                }
+                result[row * 3 + col] = sum;
+            }
+        }
+        return result;
+    }
 
     /// A basic locked, blocking MPMC queue.
     /// Every push/pop is guarded by a mutex. Condition variable is used
@@ -151,9 +178,10 @@ namespace lfs::training {
     /// Dataset example type
     struct CameraExample {
         CameraWithImage data;
-        lfs::core::Tensor target;                    // Empty tensor, not used
-        std::optional<lfs::core::Tensor> mask = {};  // Optional mask [H,W], float32
-        std::optional<lfs::core::Tensor> depth = {}; // Optional depth [H,W], float32
+        lfs::core::Tensor target;                     // Empty tensor, not used
+        std::optional<lfs::core::Tensor> mask = {};   // Optional mask [H,W], float32
+        std::optional<lfs::core::Tensor> depth = {};  // Optional depth [H,W], float32
+        std::optional<lfs::core::Tensor> normal = {}; // Optional normals [3,H,W], float32 in [-1,1]
     };
 
     /// Camera dataset configuration
@@ -511,10 +539,16 @@ namespace lfs::training {
         bool shutdown_;
     };
 
-    /// Configuration for optional mask/depth loading in PipelinedDataLoader
+    /// Configuration for optional mask/depth/normal loading in PipelinedDataLoader
     struct PipelinedAuxiliaryImageConfig {
-        bool load_masks = false;        // Whether to load masks alongside images
-        bool load_depths = false;       // Whether to load depth maps alongside images
+        bool load_masks = false;         // Whether to load masks alongside images
+        bool load_depths = false;        // Whether to load depth maps alongside images
+        bool load_normals = false;       // Whether to load normal maps alongside images
+        bool normal_flip_yz = false;     // Convert OpenGL-convention normal priors to OpenCV
+        bool normal_world_space = false; // Convert world-space normal priors to camera space
+        bool normal_srgb = false;        // Normal priors are sRGB-encoded (invert before decode)
+        // Prior-world -> reconstruction-world rotation (row-major), identity unless resolved otherwise
+        std::array<float, 9> normal_world_rotation{1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
         bool invert_masks = false;      // Invert mask values (1.0 - mask)
         float mask_threshold = 0.0f;    // If > 0, values >= threshold become 1.0
         bool use_alpha_as_mask = false; // Extract alpha channel from RGBA as mask
@@ -600,6 +634,9 @@ namespace lfs::training {
                         example.depth = std::move(depth);
                     }
                 }
+                if (ready.normal && ready.normal->is_valid()) {
+                    example.normal = std::move(*ready.normal);
+                }
 
                 return example;
             } catch (const std::exception& e) {
@@ -663,6 +700,16 @@ namespace lfs::training {
                 }
                 if (aux_config_.load_depths && cam->has_depth()) {
                     request.depth_path = cam->depth_path();
+                }
+                if (aux_config_.load_normals && cam->has_normal()) {
+                    request.normal_path = cam->normal_path();
+                    request.normal_flip_yz = aux_config_.normal_flip_yz;
+                    request.normal_srgb = aux_config_.normal_srgb;
+                    request.normal_transform_world_to_camera = aux_config_.normal_world_space;
+                    if (aux_config_.normal_world_space) {
+                        request.normal_world_to_camera = camera_world_to_camera_normal_matrix(
+                            *cam, aux_config_.normal_world_rotation);
+                    }
                 }
 
                 loader_->prefetch({request});

@@ -571,12 +571,16 @@ namespace {
         return dataset_root / std::string(folder) / rel;
     }
 
-    void write_u8_png(const fs::path& path,
-                      int width,
-                      int height,
-                      int channels,
-                      const std::vector<uint8_t>& data,
-                      int png_compression) {
+    template <typename PixelT>
+    void write_png(const fs::path& path,
+                   int width,
+                   int height,
+                   int channels,
+                   const std::vector<PixelT>& data,
+                   int png_compression) {
+        static_assert(std::is_same_v<PixelT, uint8_t> || std::is_same_v<PixelT, uint16_t>);
+        constexpr auto kFormat = std::is_same_v<PixelT, uint16_t> ? OIIO::TypeDesc::UINT16
+                                                                  : OIIO::TypeDesc::UINT8;
         if (channels < 1 || channels > 4)
             throw std::runtime_error("Internal error: invalid image channel count");
         if (data.size() != static_cast<std::size_t>(width) * height * channels)
@@ -587,7 +591,7 @@ namespace {
         if (!output)
             throw std::runtime_error("Failed to create image output: " + path_to_string(path));
 
-        OIIO::ImageSpec spec(width, height, channels, OIIO::TypeDesc::UINT8);
+        OIIO::ImageSpec spec(width, height, channels, kFormat);
         const int compression = std::clamp(png_compression, 0, 9);
         spec.attribute("png:compressionLevel", compression);
         if (compression == 0) {
@@ -600,7 +604,7 @@ namespace {
             output->close();
             throw std::runtime_error("Failed to open image output: " + path_to_string(path) + ": " + error);
         }
-        if (!output->write_image(OIIO::TypeDesc::UINT8, data.data())) {
+        if (!output->write_image(kFormat, data.data())) {
             const auto error = output->geterror();
             output->close();
             throw std::runtime_error("Failed to write image output: " + path_to_string(path) + ": " + error);
@@ -831,10 +835,12 @@ namespace {
         std::string_view provider_;
     };
 
-    std::vector<uint8_t> build_depth_png(const SpatialMap& mask,
-                                         const VectorMap& points,
-                                         int out_width,
-                                         int out_height) {
+    template <typename PixelT>
+    std::vector<PixelT> build_depth_png(const SpatialMap& mask,
+                                        const VectorMap& points,
+                                        int out_width,
+                                        int out_height) {
+        constexpr long kMaxValue = static_cast<long>(std::numeric_limits<PixelT>::max());
         if (mask.width != points.width || mask.height != points.height)
             throw std::runtime_error("Mask and point outputs have different spatial sizes");
 
@@ -851,7 +857,7 @@ namespace {
             }
         }
 
-        std::vector<uint8_t> low(pixels, 0);
+        std::vector<PixelT> low(pixels, 0);
         if (std::isfinite(min_z) && std::isfinite(max_z)) {
             const float denom = std::max(max_z - min_z, 1e-6f);
             for (std::size_t i = 0; i < pixels; ++i) {
@@ -859,12 +865,12 @@ namespace {
                 const float z = points.xyz_hwc[i * 3 + 2];
                 if (std::isfinite(valid) && valid >= 0.5f && std::isfinite(z) && z > 0.0f) {
                     const float normalized = 0.02f + 0.98f * ((z - min_z) / denom);
-                    low[i] = static_cast<uint8_t>(std::clamp(std::lround(normalized * 255.0f), 1l, 255l));
+                    low[i] = static_cast<PixelT>(std::clamp(std::lround(normalized * kMaxValue), 1l, kMaxValue));
                 }
             }
         }
 
-        std::vector<uint8_t> out(static_cast<std::size_t>(out_width) * out_height);
+        std::vector<PixelT> out(static_cast<std::size_t>(out_width) * out_height);
         for (int y = 0; y < out_height; ++y) {
             const int sy = std::min(points.height - 1, static_cast<int>((static_cast<int64_t>(y) * points.height) / out_height));
             for (int x = 0; x < out_width; ++x) {
@@ -876,14 +882,17 @@ namespace {
         return out;
     }
 
-    std::vector<uint8_t> build_normals_png(const SpatialMap& mask,
-                                           const VectorMap& normals,
-                                           int out_width,
-                                           int out_height) {
+    template <typename PixelT>
+    std::vector<PixelT> build_normals_png(const SpatialMap& mask,
+                                          const VectorMap& normals,
+                                          int out_width,
+                                          int out_height) {
+        constexpr long kMaxValue = static_cast<long>(std::numeric_limits<PixelT>::max());
+        constexpr PixelT kNeutral = static_cast<PixelT>((kMaxValue + 1) / 2);
         if (mask.width != normals.width || mask.height != normals.height)
             throw std::runtime_error("Mask and normal outputs have different spatial sizes");
 
-        std::vector<uint8_t> low(static_cast<std::size_t>(normals.width) * normals.height * 3, 128);
+        std::vector<PixelT> low(static_cast<std::size_t>(normals.width) * normals.height * 3, kNeutral);
         for (int y = 0; y < normals.height; ++y) {
             for (int x = 0; x < normals.width; ++x) {
                 const std::size_t i = static_cast<std::size_t>(y) * normals.width + x;
@@ -893,12 +902,12 @@ namespace {
                 for (int c = 0; c < 3; ++c) {
                     const float n = normals.xyz_hwc[i * 3 + c];
                     const float encoded = std::isfinite(n) ? (n * 0.5f + 0.5f) : 0.5f;
-                    low[i * 3 + c] = static_cast<uint8_t>(std::clamp(std::lround(encoded * 255.0f), 0l, 255l));
+                    low[i * 3 + c] = static_cast<PixelT>(std::clamp(std::lround(encoded * kMaxValue), 0l, kMaxValue));
                 }
             }
         }
 
-        std::vector<uint8_t> out(static_cast<std::size_t>(out_width) * out_height * 3);
+        std::vector<PixelT> out(static_cast<std::size_t>(out_width) * out_height * 3);
         for (int y = 0; y < out_height; ++y) {
             const int sy = std::min(normals.height - 1, static_cast<int>((static_cast<int64_t>(y) * normals.height) / out_height));
             for (int x = 0; x < out_width; ++x) {
@@ -1081,13 +1090,24 @@ namespace {
                         ~SlotRelease() { slots.release(); }
                     } release{write_slots};
 
-                    if (job.write_depth) {
-                        const auto depth = build_depth_png(outputs->mask, outputs->points, width, height);
-                        write_u8_png(job.depth_path, width, height, 1, depth, params.png_compression);
-                    }
-                    if (job.write_normals) {
-                        const auto normals = build_normals_png(outputs->mask, outputs->normals, width, height);
-                        write_u8_png(job.normals_path, width, height, 3, normals, params.png_compression);
+                    if (params.bit_depth == 16) {
+                        if (job.write_depth) {
+                            const auto depth = build_depth_png<uint16_t>(outputs->mask, outputs->points, width, height);
+                            write_png(job.depth_path, width, height, 1, depth, params.png_compression);
+                        }
+                        if (job.write_normals) {
+                            const auto normals = build_normals_png<uint16_t>(outputs->mask, outputs->normals, width, height);
+                            write_png(job.normals_path, width, height, 3, normals, params.png_compression);
+                        }
+                    } else {
+                        if (job.write_depth) {
+                            const auto depth = build_depth_png<uint8_t>(outputs->mask, outputs->points, width, height);
+                            write_png(job.depth_path, width, height, 1, depth, params.png_compression);
+                        }
+                        if (job.write_normals) {
+                            const auto normals = build_normals_png<uint8_t>(outputs->mask, outputs->normals, width, height);
+                            write_png(job.normals_path, width, height, 3, normals, params.png_compression);
+                        }
                     }
                 }));
         }

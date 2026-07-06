@@ -28,6 +28,8 @@ set(LFS_TRAINING_KERNEL_SOURCES
     kernels/densification_kernels.cu
     kernels/grad_alpha.cu
     kernels/depth_loss.cu
+    kernels/normal_loss.cu
+    kernels/normal_consistency_loss.cu
     kernels/image_kernels.cu
     components/sparsity_optimizer_kernels.cu
 )

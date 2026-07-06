@@ -2080,6 +2080,43 @@ class OptimizationParams:
     def depth_loss_mode(self, arg: str, /) -> None: ...
 
     @property
+    def use_normal_loss(self) -> bool:
+        """Load normal maps and use normal-map supervision during training"""
+
+    @use_normal_loss.setter
+    def use_normal_loss(self, arg: bool, /) -> None: ...
+
+    @property
+    def normal_loss_weight(self) -> float:
+        """Weight for prior normal supervision"""
+
+    @normal_loss_weight.setter
+    def normal_loss_weight(self, arg: float, /) -> None: ...
+
+    @property
+    def normal_consistency_weight(self) -> float:
+        """Weight for depth-normal consistency supervision"""
+
+    @normal_consistency_weight.setter
+    def normal_consistency_weight(self, arg: float, /) -> None: ...
+
+    @property
+    def normal_flatten_weight(self) -> float:
+        """Min-axis scale flattening weight while normal supervision is active"""
+
+    @normal_flatten_weight.setter
+    def normal_flatten_weight(self, arg: float, /) -> None: ...
+
+    @property
+    def normal_loss_space(self) -> str:
+        """
+        Normal prior coordinate space: 'auto', 'camera-opencv', 'camera-opengl', or 'world'
+        """
+
+    @normal_loss_space.setter
+    def normal_loss_space(self, arg: str, /) -> None: ...
+
+    @property
     def undistort(self) -> bool:
         """Undistort images on-the-fly before training"""
 

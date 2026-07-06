@@ -43,6 +43,8 @@
 #include "training/kernels/depth_loss.hpp"
 #include "training/kernels/grad_alpha.hpp"
 #include "training/kernels/mrnf_kernels.hpp"
+#include "training/kernels/normal_consistency_loss.hpp"
+#include "training/kernels/normal_loss.hpp"
 #include "training/training_setup.hpp"
 
 #include <array>
@@ -52,6 +54,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -93,6 +96,279 @@ namespace lfs::training {
             return value != "0" && value != "false" && value != "FALSE" &&
                    value != "off" && value != "OFF" &&
                    value != "no" && value != "NO";
+        }
+
+        // Dataset-level normal-prior convention resolution. Prior maps come in
+        // several flavors (camera-space OpenCV/OpenGL, world-space in the
+        // renderer's frame, linear or sRGB-encoded); wrong assumptions feed the
+        // loss targets that are tens of degrees off everywhere. Both axes are
+        // resolved from data: gamma by unit-norm deviation, frame by visibility
+        // consistency (a visible surface must satisfy n_cam . ray < 0 at its
+        // own pixel — an n_z test alone is ambiguous at wide FOV).
+        struct NormalPriorConvention {
+            bool usable = false;
+            bool srgb = false;
+            bool flip_yz = false;
+            bool world_space = false;
+            std::array<float, 9> world_rotation{1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+            float score = -1.0f;
+            std::string description = "unresolved";
+        };
+
+        struct NormalPriorDecodedView {
+            std::vector<std::array<float, 3>> normals;
+            std::vector<std::array<float, 3>> rays;
+            std::array<float, 9> w2c{};
+        };
+
+        [[nodiscard]] std::array<float, 9> camera_w2c_rotation_array(const lfs::core::Camera& cam) {
+            std::array<float, 9> result{};
+            auto R_cpu = cam.R().cpu().contiguous();
+            auto R_acc = R_cpu.accessor<float, 2>();
+            for (size_t row = 0; row < 3; ++row) {
+                for (size_t col = 0; col < 3; ++col) {
+                    result[row * 3 + col] = R_acc(row, col);
+                }
+            }
+            return result;
+        }
+
+        [[nodiscard]] std::array<float, 3> apply_rotation(
+            const std::array<float, 9>& m, const std::array<float, 3>& v) {
+            return {m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+                    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+                    m[6] * v[0] + m[7] * v[1] + m[8] * v[2]};
+        }
+
+        // The 24 proper signed-permutation rotations: every axis-convention
+        // difference between a renderer world frame and the reconstruction
+        // world frame (e.g. Blender z-up vs COLMAP y-down) is one of these.
+        [[nodiscard]] std::vector<std::array<float, 9>> proper_signed_permutations() {
+            constexpr int kPermutations[6][3] = {
+                {0, 1, 2},
+                {0, 2, 1},
+                {1, 0, 2},
+                {1, 2, 0},
+                {2, 0, 1},
+                {2, 1, 0}};
+            constexpr int kPermutationSign[6] = {1, -1, -1, 1, 1, -1};
+            std::vector<std::array<float, 9>> rotations;
+            rotations.reserve(24);
+            for (int p = 0; p < 6; ++p) {
+                for (int sign_bits = 0; sign_bits < 8; ++sign_bits) {
+                    const int signs[3] = {
+                        (sign_bits & 1) ? -1 : 1,
+                        (sign_bits & 2) ? -1 : 1,
+                        (sign_bits & 4) ? -1 : 1};
+                    if (kPermutationSign[p] * signs[0] * signs[1] * signs[2] != 1) {
+                        continue;
+                    }
+                    std::array<float, 9> m{};
+                    for (int row = 0; row < 3; ++row) {
+                        m[row * 3 + kPermutations[p][row]] = static_cast<float>(signs[row]);
+                    }
+                    rotations.push_back(m);
+                }
+            }
+            return rotations;
+        }
+
+        [[nodiscard]] std::string describe_axis_rotation(const std::array<float, 9>& m) {
+            constexpr char kAxes[3] = {'x', 'y', 'z'};
+            std::string out = "[";
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                    const float v = m[row * 3 + col];
+                    if (v != 0.0f) {
+                        if (v < 0.0f) {
+                            out += '-';
+                        }
+                        out += kAxes[col];
+                    }
+                }
+                out += (row < 2) ? ", " : "]";
+            }
+            return out;
+        }
+
+        [[nodiscard]] float score_normal_prior_frame(
+            const std::vector<NormalPriorDecodedView>& views,
+            const bool flip_yz,
+            const std::array<float, 9>* world_rotation) {
+            size_t total = 0;
+            size_t facing = 0;
+            for (const auto& view : views) {
+                for (size_t i = 0; i < view.normals.size(); ++i) {
+                    std::array<float, 3> n = view.normals[i];
+                    if (flip_yz) {
+                        n[1] = -n[1];
+                        n[2] = -n[2];
+                    }
+                    if (world_rotation) {
+                        n = apply_rotation(view.w2c, apply_rotation(*world_rotation, n));
+                    }
+                    const auto& ray = view.rays[i];
+                    ++total;
+                    if (n[0] * ray[0] + n[1] * ray[1] + n[2] * ray[2] < 0.0f) {
+                        ++facing;
+                    }
+                }
+            }
+            return total > 0 ? static_cast<float>(facing) / static_cast<float>(total) : -1.0f;
+        }
+
+        [[nodiscard]] NormalPriorConvention resolve_normal_prior_convention(
+            const std::vector<const lfs::core::Camera*>& cameras,
+            const std::string& forced_space) {
+            constexpr size_t kProbeViews = 16;
+            constexpr size_t kProbeSamplesPerView = 4096;
+            constexpr float kMinValidNormSq = 0.25f;
+            constexpr float kMaxUnitNormDeviation = 0.3f;
+            constexpr float kMinAcceptScore = 0.9f;
+
+            NormalPriorConvention result;
+
+            std::vector<float> deviation_linear;
+            std::vector<float> deviation_srgb;
+            struct RawView {
+                std::vector<lfs::core::NormalPriorSample> samples;
+                const lfs::core::Camera* cam = nullptr;
+            };
+            std::vector<RawView> raw_views;
+            const size_t stride = std::max<size_t>(1, cameras.size() / kProbeViews);
+            for (size_t i = 0; i < cameras.size() && raw_views.size() < kProbeViews; i += stride) {
+                const auto* cam = cameras[i];
+                if (cam->camera_width() <= 0 || cam->camera_height() <= 0 ||
+                    cam->focal_x() <= 0.0f || cam->focal_y() <= 0.0f) {
+                    continue;
+                }
+                auto samples = lfs::core::sample_normal_prior_pixels(cam->normal_path(), kProbeSamplesPerView);
+                if (samples.empty()) {
+                    continue;
+                }
+                for (const auto& s : samples) {
+                    const float lx = s.r * 2.0f - 1.0f;
+                    const float ly = s.g * 2.0f - 1.0f;
+                    const float lz = s.b * 2.0f - 1.0f;
+                    const float sx = lfs::core::srgb_encoding_to_linear(s.r) * 2.0f - 1.0f;
+                    const float sy = lfs::core::srgb_encoding_to_linear(s.g) * 2.0f - 1.0f;
+                    const float sz = lfs::core::srgb_encoding_to_linear(s.b) * 2.0f - 1.0f;
+                    const float norm_lin_sq = lx * lx + ly * ly + lz * lz;
+                    const float norm_srgb_sq = sx * sx + sy * sy + sz * sz;
+                    if (norm_lin_sq >= kMinValidNormSq) {
+                        deviation_linear.push_back(std::abs(std::sqrt(norm_lin_sq) - 1.0f));
+                    }
+                    if (norm_srgb_sq >= kMinValidNormSq) {
+                        deviation_srgb.push_back(std::abs(std::sqrt(norm_srgb_sq) - 1.0f));
+                    }
+                }
+                raw_views.push_back(RawView{std::move(samples), cam});
+            }
+            if (raw_views.empty() || (deviation_linear.empty() && deviation_srgb.empty())) {
+                result.description = "no probeable normal maps";
+                return result;
+            }
+
+            const auto median_of = [](std::vector<float>& values) {
+                if (values.empty()) {
+                    return std::numeric_limits<float>::infinity();
+                }
+                const size_t mid = values.size() / 2;
+                std::nth_element(values.begin(), values.begin() + mid, values.end());
+                return values[mid];
+            };
+            const float median_linear = median_of(deviation_linear);
+            const float median_srgb = median_of(deviation_srgb);
+            result.srgb = median_srgb < median_linear;
+            const float best_deviation = result.srgb ? median_srgb : median_linear;
+            if (best_deviation > kMaxUnitNormDeviation) {
+                result.description = "pixels are not unit normals under linear or sRGB decoding";
+                return result;
+            }
+
+            std::vector<NormalPriorDecodedView> views;
+            views.reserve(raw_views.size());
+            for (const auto& raw : raw_views) {
+                NormalPriorDecodedView view;
+                view.w2c = camera_w2c_rotation_array(*raw.cam);
+                const float width = static_cast<float>(raw.cam->camera_width());
+                const float height = static_cast<float>(raw.cam->camera_height());
+                const float fx = raw.cam->focal_x();
+                const float fy = raw.cam->focal_y();
+                const float cx = raw.cam->center_x();
+                const float cy = raw.cam->center_y();
+                view.normals.reserve(raw.samples.size());
+                view.rays.reserve(raw.samples.size());
+                for (const auto& s : raw.samples) {
+                    std::array<float, 3> n;
+                    if (result.srgb) {
+                        n = {lfs::core::srgb_encoding_to_linear(s.r) * 2.0f - 1.0f,
+                             lfs::core::srgb_encoding_to_linear(s.g) * 2.0f - 1.0f,
+                             lfs::core::srgb_encoding_to_linear(s.b) * 2.0f - 1.0f};
+                    } else {
+                        n = {s.r * 2.0f - 1.0f, s.g * 2.0f - 1.0f, s.b * 2.0f - 1.0f};
+                    }
+                    if (n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < kMinValidNormSq) {
+                        continue;
+                    }
+                    view.normals.push_back(n);
+                    view.rays.push_back({(s.u * width - cx) / fx,
+                                         (s.v * height - cy) / fy,
+                                         1.0f});
+                }
+                if (!view.normals.empty()) {
+                    views.push_back(std::move(view));
+                }
+            }
+            if (views.empty()) {
+                result.description = "no valid normal samples";
+                return result;
+            }
+
+            struct Hypothesis {
+                bool flip_yz = false;
+                bool world_space = false;
+                std::array<float, 9> world_rotation{};
+                std::string description;
+            };
+            std::vector<Hypothesis> hypotheses;
+            if (forced_space == "auto" || forced_space == "camera-opencv") {
+                hypotheses.push_back({false, false, {}, "camera-space OpenCV"});
+            }
+            if (forced_space == "auto" || forced_space == "camera-opengl") {
+                hypotheses.push_back({true, false, {}, "camera-space OpenGL"});
+            }
+            if (forced_space == "auto" || forced_space == "world") {
+                for (const auto& rotation : proper_signed_permutations()) {
+                    hypotheses.push_back({false, true, rotation,
+                                          "world-space, n_world = " + describe_axis_rotation(rotation) + " of prior"});
+                }
+            }
+
+            const Hypothesis* best = nullptr;
+            for (const auto& hypothesis : hypotheses) {
+                const float score = score_normal_prior_frame(
+                    views, hypothesis.flip_yz,
+                    hypothesis.world_space ? &hypothesis.world_rotation : nullptr);
+                if (score > result.score) {
+                    result.score = score;
+                    best = &hypothesis;
+                }
+            }
+            if (best == nullptr) {
+                result.description = "no frame hypothesis evaluated";
+                return result;
+            }
+
+            result.flip_yz = best->flip_yz;
+            result.world_space = best->world_space;
+            if (best->world_space) {
+                result.world_rotation = best->world_rotation;
+            }
+            result.description = best->description;
+            const bool forced = forced_space != "auto";
+            result.usable = forced || result.score >= kMinAcceptScore;
+            return result;
         }
 
         [[nodiscard]] std::unique_ptr<lfs::core::SplatData> make_ply_export_model(
@@ -167,6 +443,10 @@ namespace lfs::training {
 
         constexpr float kDepthLossFinalScale = 0.02f;
         constexpr float kDepthLossGradientTermWeight = 1.0f;
+        // Normal supervision starts once the geometry has roughly formed
+        // (2DGS enables its normal term at ~23% of training): rotating fat,
+        // mispositioned Gaussians early only fights densification.
+        constexpr float kNormalSupervisionStartFraction = 0.2f;
 
         [[nodiscard]] kernels::DepthPriorType depth_prior_from_mode(const std::string_view mode) {
             if (mode == "ssi-disparity") {
@@ -3547,6 +3827,7 @@ namespace lfs::training {
                 record_vram_tensor("train.persistent", "loss_accumulator", loss_accumulator_);
                 record_vram_tensor("train.persistent", "pipelined_mask", pipelined_mask_);
                 record_vram_tensor("train.persistent", "pipelined_depth", pipelined_depth_);
+                record_vram_tensor("train.persistent", "pipelined_normal", pipelined_normal_);
                 record_vram_tensor("train.persistent", "background", background_);
                 record_vram_tensor("train.persistent", "background_mix_buffer", bg_mix_buffer_);
                 record_vram_tensor("train.persistent", "background_image_base", bg_image_base_);
@@ -3653,6 +3934,12 @@ namespace lfs::training {
                 }
             }
 
+            const int normal_start_iter = static_cast<int>(
+                kNormalSupervisionStartFraction *
+                static_cast<float>(std::max(1, params_.optimization.resolved_total_iterations())));
+            const bool normal_supervision_started =
+                params_.optimization.use_normal_loss && iter >= normal_start_iter;
+
             FastGSFusedExtraGradients fused_extra_gradients;
             lfs::core::Tensor fused_scale_reg_loss_gpu;
             lfs::core::Tensor fused_opacity_reg_loss_gpu;
@@ -3664,6 +3951,9 @@ namespace lfs::training {
                 if (run_fastgs_gaussian_backward) {
                     fused_extra_gradients.scale_reg_weight = params_.optimization.scale_reg;
                     fused_extra_gradients.opacity_reg_weight = params_.optimization.opacity_reg;
+                    if (normal_supervision_started) {
+                        fused_extra_gradients.flatten_reg_weight = params_.optimization.normal_flatten_weight;
+                    }
                 }
 
                 if (params_.optimization.scale_reg > 0.0f) {
@@ -3736,10 +4026,17 @@ namespace lfs::training {
                         output = std::move(rasterize_result->first);
                         gsplat_ctx.emplace(std::move(rasterize_result->second));
                     } else {
+                        const bool render_normal =
+                            normal_supervision_started &&
+                            ((params_.optimization.normal_loss_weight > 0.0f &&
+                              normal_prior_usable_ &&
+                              cam->has_normal()) ||
+                             params_.optimization.normal_consistency_weight > 0.0f);
                         auto rasterize_result = fast_rasterize_forward(
                             *cam, strategy_->get_model(), bg,
                             0, 0, 0, 0,
-                            params_.optimization.mip_filter, bg_tile);
+                            params_.optimization.mip_filter, bg_tile,
+                            render_normal);
 
                         // Check for OOM error
                         if (!rasterize_result) {
@@ -3949,6 +4246,7 @@ namespace lfs::training {
                     lfs::core::Tensor tile_grad_raw;
                     lfs::core::Tensor tile_grad_alpha;
                     lfs::core::Tensor tile_grad_depth;
+                    lfs::core::Tensor tile_grad_normal;
                     lfs::core::Tensor tile_error_map;
                     lfs::core::Tensor mask_tile;
                     bool depth_error_map_ready = false;
@@ -4210,6 +4508,290 @@ namespace lfs::training {
                         }
                     }
 
+                    if (run_fastgs_gaussian_backward &&
+                        params_.optimization.use_normal_loss &&
+                        params_.optimization.normal_loss_weight > 0.0f &&
+                        output.normal.is_valid() &&
+                        output.normal.numel() > 0 &&
+                        output.alpha.is_valid() &&
+                        output.alpha.numel() > 0) {
+                        LFS_VRAM_SCOPE("train.normal_loss");
+                        LOG_VRAM_DIFF("train.normal_loss");
+
+                        lfs::core::Tensor target_normal;
+                        if (pipelined_normal_.is_valid() && pipelined_normal_.numel() > 0) {
+                            target_normal = pipelined_normal_;
+                        } else if (cam->has_normal()) {
+                            target_normal = cam->load_and_get_normal(
+                                params_.dataset.resize_factor,
+                                params_.dataset.max_width,
+                                lfs::core::Camera::NormalPriorDecode{
+                                    normal_prior_srgb_,
+                                    normal_prior_flip_yz_,
+                                    normal_prior_world_space_,
+                                    normal_prior_world_rotation_});
+                            // Per-camera GPU caching of [3,H,W] priors accumulates
+                            // unbounded VRAM on large datasets; the fallback path
+                            // re-decodes instead (the pipelined loader is the fast path).
+                            cam->release_normal_cache();
+                        }
+
+                        if (target_normal.is_valid() && target_normal.numel() > 0) {
+                            lfs::core::Tensor rendered_normal = output.normal;
+                            if (!rendered_normal.is_contiguous()) {
+                                rendered_normal = rendered_normal.contiguous();
+                            }
+
+                            lfs::core::Tensor rendered_alpha = output.alpha;
+                            if (rendered_alpha.ndim() == 3 && rendered_alpha.shape()[0] == 1) {
+                                rendered_alpha = rendered_alpha.squeeze(0);
+                            }
+                            if (!rendered_alpha.is_contiguous()) {
+                                rendered_alpha = rendered_alpha.contiguous();
+                            }
+
+                            const cudaStream_t normal_stream = rendered_normal.stream();
+                            const int render_h = static_cast<int>(rendered_normal.shape()[1]);
+                            const int render_w = static_cast<int>(rendered_normal.shape()[2]);
+
+                            if (target_normal.ndim() == 3 &&
+                                (target_normal.shape()[1] != rendered_normal.shape()[1] ||
+                                 target_normal.shape()[2] != rendered_normal.shape()[2])) {
+                                target_normal = lfs::core::lanczos_resize_float_chw(
+                                    target_normal, render_h, render_w, 2, normal_stream);
+                            }
+
+                            const bool normal_shape_matches =
+                                target_normal.is_valid() &&
+                                target_normal.ndim() == 3 &&
+                                target_normal.shape()[0] == 3 &&
+                                target_normal.shape()[1] == rendered_normal.shape()[1] &&
+                                target_normal.shape()[2] == rendered_normal.shape()[2];
+
+                            if (normal_shape_matches) {
+                                if (!target_normal.is_contiguous()) {
+                                    target_normal = target_normal.contiguous();
+                                }
+                                const size_t num_normal_pixels =
+                                    static_cast<size_t>(render_h) * static_cast<size_t>(render_w);
+                                const size_t normal_partials =
+                                    lfs::training::kernels::normal_loss_partial_count(num_normal_pixels);
+
+                                if (!normal_loss_scalar_.is_valid()) {
+                                    normal_loss_scalar_ = lfs::core::Tensor::zeros({1}, lfs::core::Device::CUDA);
+                                }
+                                normal_loss_scalar_.set_stream(normal_stream);
+                                if (!normal_loss_grad_.is_valid() ||
+                                    normal_loss_grad_.shape() != rendered_normal.shape()) {
+                                    normal_loss_grad_ = lfs::core::Tensor::empty(rendered_normal.shape(), lfs::core::Device::CUDA);
+                                }
+                                normal_loss_grad_.set_stream(normal_stream);
+                                if (!normal_loss_partials_.is_valid() ||
+                                    normal_loss_partials_.shape()[0] != normal_partials) {
+                                    normal_loss_partials_ = lfs::core::Tensor::empty({normal_partials}, lfs::core::Device::CUDA);
+                                }
+                                normal_loss_partials_.set_stream(normal_stream);
+
+                                lfs::training::kernels::launch_normal_loss(
+                                    rendered_normal.ptr<float>(),
+                                    rendered_alpha.ptr<float>(),
+                                    target_normal.ptr<float>(),
+                                    normal_loss_grad_.ptr<float>(),
+                                    normal_loss_scalar_.ptr<float>(),
+                                    normal_loss_partials_.ptr<float>(),
+                                    render_w,
+                                    render_h,
+                                    params_.optimization.normal_loss_weight,
+                                    normal_stream);
+
+                                static const bool normal_loss_diag = env_flag_enabled("LFS_NORMAL_LOSS_DIAG");
+                                static const int normal_loss_diag_interval =
+                                    env_int_or_default("LFS_NORMAL_LOSS_DIAG_INTERVAL", 50);
+                                if (normal_loss_diag && (iter == 1 || iter % normal_loss_diag_interval == 0)) {
+                                    namespace nslots = lfs::training::kernels::normal_loss_slots;
+                                    const auto nslot = [&](const int s) {
+                                        return normal_loss_partials_.slice(0, s, s + 1).item<float>();
+                                    };
+                                    const auto normal_grad_abs = normal_loss_grad_.abs();
+                                    LOG_INFO("[NORMAL_LOSS] iter={} camera='{}' loss={:.6f} weight={:.4f} valid={:.0f} sum_alpha={:.1f} valid_pixels={:.0f} mean_cos={:.4f} grad_abs_max={:.6e} grad_abs_mean={:.6e}",
+                                             iter,
+                                             cam->image_name(),
+                                             normal_loss_scalar_.item<float>(),
+                                             params_.optimization.normal_loss_weight,
+                                             nslot(nslots::kValid),
+                                             nslot(nslots::kSumAlpha),
+                                             nslot(nslots::kCount),
+                                             nslot(nslots::kMeanCos),
+                                             normal_grad_abs.max().item<float>(),
+                                             normal_grad_abs.mean().item<float>());
+                                }
+
+                                tile_grad_normal = normal_loss_grad_;
+                                tile_loss = tile_loss + normal_loss_scalar_;
+                            } else {
+                                LOG_WARN("Skipping normal loss for '{}': rendered normal shape and target normal shape differ",
+                                         cam->image_name());
+                            }
+                        }
+                    }
+
+                    bool normal_consistency_residual_ready = false;
+                    if (run_fastgs_gaussian_backward &&
+                        params_.optimization.use_normal_loss &&
+                        params_.optimization.normal_consistency_weight > 0.0f &&
+                        output.normal.is_valid() &&
+                        output.normal.numel() > 0 &&
+                        output.depth.is_valid() &&
+                        output.depth.numel() > 0 &&
+                        output.alpha.is_valid() &&
+                        output.alpha.numel() > 0) {
+                        LFS_VRAM_SCOPE("train.normal_consistency_loss");
+                        LOG_VRAM_DIFF("train.normal_consistency_loss");
+
+                        lfs::core::Tensor rendered_normal = output.normal;
+                        if (!rendered_normal.is_contiguous()) {
+                            rendered_normal = rendered_normal.contiguous();
+                        }
+                        lfs::core::Tensor rendered_depth = output.depth;
+                        if (rendered_depth.ndim() == 3 && rendered_depth.shape()[0] == 1) {
+                            rendered_depth = rendered_depth.squeeze(0);
+                        }
+                        if (!rendered_depth.is_contiguous()) {
+                            rendered_depth = rendered_depth.contiguous();
+                        }
+                        lfs::core::Tensor rendered_alpha = output.alpha;
+                        if (rendered_alpha.ndim() == 3 && rendered_alpha.shape()[0] == 1) {
+                            rendered_alpha = rendered_alpha.squeeze(0);
+                        }
+                        if (!rendered_alpha.is_contiguous()) {
+                            rendered_alpha = rendered_alpha.contiguous();
+                        }
+
+                        const int render_h = static_cast<int>(rendered_normal.shape()[1]);
+                        const int render_w = static_cast<int>(rendered_normal.shape()[2]);
+                        const bool consistency_shapes_match =
+                            rendered_normal.ndim() == 3 &&
+                            rendered_normal.shape()[0] == 3 &&
+                            rendered_depth.ndim() == 2 &&
+                            rendered_alpha.ndim() == 2 &&
+                            rendered_depth.shape()[0] == rendered_normal.shape()[1] &&
+                            rendered_depth.shape()[1] == rendered_normal.shape()[2] &&
+                            rendered_alpha.shape()[0] == rendered_normal.shape()[1] &&
+                            rendered_alpha.shape()[1] == rendered_normal.shape()[2] &&
+                            cam->camera_width() > 0 && cam->camera_height() > 0 &&
+                            cam->focal_x() > 0.0f && cam->focal_y() > 0.0f;
+
+                        if (consistency_shapes_match) {
+                            const cudaStream_t consistency_stream = rendered_normal.stream();
+
+                            if (!tile_grad_normal.is_valid()) {
+                                if (!normal_loss_grad_.is_valid() ||
+                                    normal_loss_grad_.shape() != rendered_normal.shape()) {
+                                    normal_loss_grad_ = lfs::core::Tensor::empty(rendered_normal.shape(), lfs::core::Device::CUDA);
+                                }
+                                normal_loss_grad_.set_stream(consistency_stream);
+                                normal_loss_grad_.zero_();
+                                tile_grad_normal = normal_loss_grad_;
+                            }
+                            if (!tile_grad_depth.is_valid()) {
+                                if (!depth_loss_grad_.is_valid() ||
+                                    depth_loss_grad_.shape() != rendered_depth.shape()) {
+                                    depth_loss_grad_ = lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
+                                }
+                                depth_loss_grad_.set_stream(consistency_stream);
+                                depth_loss_grad_.zero_();
+                                if (!depth_loss_grad_alpha_.is_valid() ||
+                                    depth_loss_grad_alpha_.shape() != rendered_depth.shape()) {
+                                    depth_loss_grad_alpha_ = lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
+                                }
+                                depth_loss_grad_alpha_.set_stream(consistency_stream);
+                                depth_loss_grad_alpha_.zero_();
+                                if (tile_grad_alpha.is_valid() && tile_grad_alpha.numel() > 0) {
+                                    auto existing_alpha_grad = tile_grad_alpha;
+                                    if (existing_alpha_grad.ndim() == 3 && existing_alpha_grad.shape()[0] == 1) {
+                                        existing_alpha_grad = existing_alpha_grad.squeeze(0);
+                                    }
+                                    depth_loss_grad_alpha_.add_(existing_alpha_grad);
+                                }
+                                tile_grad_depth = depth_loss_grad_;
+                                tile_grad_alpha = depth_loss_grad_alpha_;
+                            }
+
+                            const size_t num_consistency_pixels =
+                                static_cast<size_t>(render_h) * static_cast<size_t>(render_w);
+                            const size_t consistency_partials =
+                                lfs::training::kernels::normal_consistency_partial_count(num_consistency_pixels);
+                            if (!normal_consistency_scalar_.is_valid()) {
+                                normal_consistency_scalar_ = lfs::core::Tensor::zeros({1}, lfs::core::Device::CUDA);
+                            }
+                            normal_consistency_scalar_.set_stream(consistency_stream);
+                            if (!normal_consistency_partials_.is_valid() ||
+                                normal_consistency_partials_.shape()[0] != consistency_partials) {
+                                normal_consistency_partials_ = lfs::core::Tensor::empty({consistency_partials}, lfs::core::Device::CUDA);
+                            }
+                            normal_consistency_partials_.set_stream(consistency_stream);
+                            float* consistency_residual_ptr = nullptr;
+                            if (use_pixel_error_densification) {
+                                if (!normal_consistency_residual_.is_valid() ||
+                                    normal_consistency_residual_.shape() != rendered_depth.shape()) {
+                                    normal_consistency_residual_ = lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
+                                }
+                                normal_consistency_residual_.set_stream(consistency_stream);
+                                consistency_residual_ptr = normal_consistency_residual_.ptr<float>();
+                            }
+
+                            const float fx = cam->focal_x() * static_cast<float>(render_w) /
+                                             static_cast<float>(cam->camera_width());
+                            const float fy = cam->focal_y() * static_cast<float>(render_h) /
+                                             static_cast<float>(cam->camera_height());
+                            const float cx = cam->center_x() * static_cast<float>(render_w) /
+                                             static_cast<float>(cam->camera_width());
+                            const float cy = cam->center_y() * static_cast<float>(render_h) /
+                                             static_cast<float>(cam->camera_height());
+
+                            lfs::training::kernels::launch_normal_consistency_loss(
+                                rendered_normal.ptr<float>(),
+                                rendered_depth.ptr<float>(),
+                                rendered_alpha.ptr<float>(),
+                                tile_grad_normal.ptr<float>(),
+                                tile_grad_depth.ptr<float>(),
+                                depth_loss_grad_alpha_.ptr<float>(),
+                                consistency_residual_ptr,
+                                normal_consistency_scalar_.ptr<float>(),
+                                normal_consistency_partials_.ptr<float>(),
+                                render_w,
+                                render_h,
+                                fx,
+                                fy,
+                                cx,
+                                cy,
+                                params_.optimization.normal_consistency_weight,
+                                consistency_stream);
+                            normal_consistency_residual_ready = consistency_residual_ptr != nullptr;
+
+                            static const bool normal_loss_diag = env_flag_enabled("LFS_NORMAL_LOSS_DIAG");
+                            static const int normal_loss_diag_interval =
+                                env_int_or_default("LFS_NORMAL_LOSS_DIAG_INTERVAL", 50);
+                            if (normal_loss_diag && (iter == 1 || iter % normal_loss_diag_interval == 0)) {
+                                namespace cslots = lfs::training::kernels::normal_consistency_slots;
+                                const auto cslot = [&](const int s) {
+                                    return normal_consistency_partials_.slice(0, s, s + 1).item<float>();
+                                };
+                                LOG_INFO("[NORMAL_CONSISTENCY] iter={} camera='{}' loss={:.6f} weight={:.4f} valid={:.0f} sum_alpha={:.1f} valid_pixels={:.0f} mean_cos={:.4f}",
+                                         iter,
+                                         cam->image_name(),
+                                         normal_consistency_scalar_.item<float>(),
+                                         params_.optimization.normal_consistency_weight,
+                                         cslot(cslots::kValid),
+                                         cslot(cslots::kSumAlpha),
+                                         cslot(cslots::kCount),
+                                         cslot(cslots::kMeanCos));
+                            }
+
+                            tile_loss = tile_loss + normal_consistency_scalar_;
+                        }
+                    }
+
                     // 2) Extract error map from workspace's ssim_map
                     if (use_pixel_error_densification) {
                         LFS_VRAM_SCOPE("train.densification_error_map");
@@ -4299,10 +4881,11 @@ namespace lfs::training {
                             tile_error_map.ptr<float>(), tile_error_map.numel(),
                             map_mean.ptr<float>(), 1e-6f);
 
-                        // Blend the depth residual as a second mean-normalized
-                        // signal: relative structure from both maps survives, and
-                        // a uniformly-wrong depth map cannot flatten the
-                        // photometric signal into grow-everywhere.
+                        // Blend depth and normal-consistency residuals as further
+                        // mean-normalized signals: relative structure from every
+                        // map survives, and a uniformly-wrong signal cannot
+                        // flatten the photometric one into grow-everywhere.
+                        int error_signal_count = 1;
                         if (depth_error_map_ready &&
                             tile_error_map.shape() == depth_loss_error_map_.shape()) {
                             const auto depth_map_mean = depth_loss_error_map_.mean();
@@ -4310,7 +4893,19 @@ namespace lfs::training {
                                 depth_loss_error_map_.ptr<float>(), depth_loss_error_map_.numel(),
                                 depth_map_mean.ptr<float>(), 1e-6f);
                             tile_error_map.add_(depth_loss_error_map_);
-                            tile_error_map.mul_(0.5f);
+                            ++error_signal_count;
+                        }
+                        if (normal_consistency_residual_ready &&
+                            tile_error_map.shape() == normal_consistency_residual_.shape()) {
+                            const auto residual_mean = normal_consistency_residual_.mean();
+                            lfs::training::kernels::launch_normalize_by_device_scalar(
+                                normal_consistency_residual_.ptr<float>(), normal_consistency_residual_.numel(),
+                                residual_mean.ptr<float>(), 1e-6f);
+                            tile_error_map.add_(normal_consistency_residual_);
+                            ++error_signal_count;
+                        }
+                        if (error_signal_count > 1) {
+                            tile_error_map.mul_(1.0f / static_cast<float>(error_signal_count));
                         }
                     }
 
@@ -4404,6 +4999,7 @@ namespace lfs::training {
                         add_tensor_entry(trainer_entries, "trainer.loss_accumulator", loss_accumulator_);
                         add_tensor_entry(trainer_entries, "trainer.pipelined_mask", pipelined_mask_);
                         add_tensor_entry(trainer_entries, "trainer.pipelined_depth", pipelined_depth_);
+                        add_tensor_entry(trainer_entries, "trainer.pipelined_normal", pipelined_normal_);
                         add_tensor_entry(trainer_entries, "trainer.depth_loss_grad", depth_loss_grad_);
                         add_tensor_entry(trainer_entries, "trainer.depth_loss_partials", depth_loss_partials_);
                         log_entry_bytes("trainer_pool_backed_live", trainer_entries);
@@ -4482,7 +5078,8 @@ namespace lfs::training {
                                                         iter,
                                                         fused_extra_gradients,
                                                         tile_grad_depth,
-                                                        tile_grad_depth.is_valid() && tile_grad_depth.numel() > 0);
+                                                        tile_grad_depth.is_valid() && tile_grad_depth.numel() > 0,
+                                                        tile_grad_normal);
                                 if (model_write_lock.owns_lock()) {
                                     recordParamsReady();
                                 }
@@ -4970,6 +5567,64 @@ namespace lfs::training {
                     fitDepthAnchors(cameras_with_depth);
                 }
             }
+            aux_pipeline_config.load_normals =
+                params_.optimization.use_normal_loss &&
+                params_.optimization.normal_loss_weight > 0.0f;
+            if (aux_pipeline_config.load_normals) {
+                normal_prior_flip_yz_ = false;
+                normal_prior_world_space_ = false;
+                normal_prior_srgb_ = false;
+                normal_prior_world_rotation_ = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+                normal_prior_usable_ = true;
+                std::vector<const lfs::core::Camera*> normal_cameras;
+                for (const auto& cam : train_dataset_->get_cameras()) {
+                    if (cam->has_normal()) {
+                        normal_cameras.push_back(cam.get());
+                    }
+                }
+                LOG_INFO("Normal loss enabled (weight={}, space={})",
+                         params_.optimization.normal_loss_weight,
+                         params_.optimization.normal_loss_space);
+                if (normal_cameras.empty()) {
+                    LOG_WARN("Normal loss is enabled but none of the {} training cameras has a normal map — "
+                             "the normal loss will be inactive. Normal files go in <dataset>/normals (or normal/) "
+                             "named like the image or sharing its trailing frame number.",
+                             train_dataset_->get_cameras().size());
+                } else {
+                    LOG_INFO("Normal maps available for {}/{} training cameras",
+                             normal_cameras.size(), train_dataset_->get_cameras().size());
+
+                    const auto convention = resolve_normal_prior_convention(
+                        normal_cameras, params_.optimization.normal_loss_space);
+                    normal_prior_usable_ = convention.usable;
+                    normal_prior_flip_yz_ = convention.flip_yz;
+                    normal_prior_world_space_ = convention.world_space;
+                    normal_prior_srgb_ = convention.srgb;
+                    normal_prior_world_rotation_ = convention.world_rotation;
+                    if (convention.usable) {
+                        LOG_INFO("Normal priors resolved as {} ({} encoding, visibility consistency {:.3f}, space='{}')",
+                                 convention.description,
+                                 convention.srgb ? "sRGB" : "linear",
+                                 convention.score,
+                                 params_.optimization.normal_loss_space);
+                        if (convention.score >= 0.0f && convention.score < 0.9f) {
+                            LOG_WARN("Normal prior visibility consistency is only {:.3f} — the forced "
+                                     "convention '{}' may not match the data",
+                                     convention.score, params_.optimization.normal_loss_space);
+                        }
+                    } else {
+                        LOG_WARN("Normal prior convention could not be resolved ({}; best visibility "
+                                 "consistency {:.3f}, space='{}') — normal loss disabled",
+                                 convention.description, convention.score,
+                                 params_.optimization.normal_loss_space);
+                    }
+                }
+                aux_pipeline_config.load_normals = normal_prior_usable_;
+                aux_pipeline_config.normal_flip_yz = normal_prior_flip_yz_;
+                aux_pipeline_config.normal_world_space = normal_prior_world_space_;
+                aux_pipeline_config.normal_srgb = normal_prior_srgb_;
+                aux_pipeline_config.normal_world_rotation = normal_prior_world_rotation_;
+            }
             if (params_.optimization.mask_mode != lfs::core::param::MaskMode::None) {
                 aux_pipeline_config.invert_masks = params_.optimization.invert_masks;
                 aux_pipeline_config.mask_threshold = params_.optimization.mask_threshold;
@@ -5041,6 +5696,7 @@ namespace lfs::training {
                 // Store pipelined mask for use in train_step
                 pipelined_mask_ = example.mask.has_value() ? std::move(*example.mask) : lfs::core::Tensor();
                 pipelined_depth_ = example.depth.has_value() ? std::move(*example.depth) : lfs::core::Tensor();
+                pipelined_normal_ = example.normal.has_value() ? std::move(*example.normal) : lfs::core::Tensor();
 
                 if (memory_breakdown_enabled_ && !memory_breakdown_logged_first_batch_) {
                     const auto snapshot = capture_vram_snapshot(true);

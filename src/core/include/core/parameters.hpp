@@ -133,6 +133,13 @@ namespace lfs::core {
             float depth_loss_weight = 2.0f;      // Depth supervision weight (decays over training)
             std::string depth_loss_mode = "ssi"; // ssi (auto prior), ssi-disparity, or ssi-depth
 
+            // Normal supervision
+            bool use_normal_loss = false;            // Use dataset normal maps when available
+            float normal_loss_weight = 0.05f;        // Prior normal supervision weight
+            float normal_consistency_weight = 0.05f; // Depth-normal consistency weight
+            float normal_flatten_weight = 1.0f;      // L1 on the smallest scale axis while normal supervision is active
+            std::string normal_loss_space = "auto";  // auto, camera-opencv, camera-opengl, or world
+
             // Mip filter (anti-aliasing)
             bool mip_filter = false;
 
@@ -352,6 +359,7 @@ namespace lfs::core {
             std::int64_t num_tokens = 1800;
             int threads = 0;
             int png_compression = 1;
+            int bit_depth = 16;
             bool force_cpu = false;
             bool overwrite = false;
             bool no_download = false;

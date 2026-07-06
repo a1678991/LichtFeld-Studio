@@ -44,4 +44,21 @@ namespace lfs::core {
         int kernel_size = 2,
         cudaStream_t cuda_stream = nullptr);
 
+    /**
+     * High-quality Lanczos resampling for planar 3-channel float images on GPU
+     *
+     * @param input Input tensor in [C, H, W] format (float32, 3 channels)
+     * @param output_h Target height
+     * @param output_w Target width
+     * @param kernel_size Lanczos kernel size (typically 2 or 3)
+     * @param cuda_stream CUDA stream for async execution
+     * @return Resized tensor in [C, H, W] format (float32)
+     */
+    Tensor lanczos_resize_float_chw(
+        const Tensor& input,
+        int output_h,
+        int output_w,
+        int kernel_size = 2,
+        cudaStream_t cuda_stream = nullptr);
+
 } // namespace lfs::core

@@ -432,6 +432,7 @@ namespace lfs::training {
         // Pre-loaded mask from pipelined dataloader (used in train_step)
         lfs::core::Tensor pipelined_mask_;
         lfs::core::Tensor pipelined_depth_;
+        lfs::core::Tensor pipelined_normal_;
 
         // Bilateral grid for appearance modeling (optional)
         std::unique_ptr<BilateralGrid> bilateral_grid_;
@@ -455,6 +456,20 @@ namespace lfs::training {
         core::Tensor depth_loss_grad_alpha_;
         core::Tensor depth_loss_error_map_;
         core::Tensor depth_loss_partials_;
+        core::Tensor normal_loss_scalar_;
+        core::Tensor normal_loss_grad_;
+        core::Tensor normal_loss_partials_;
+        core::Tensor normal_consistency_scalar_;
+        core::Tensor normal_consistency_partials_;
+        core::Tensor normal_consistency_residual_;
+        // Dataset-level normal-prior convention, resolved once at startup
+        bool normal_prior_flip_yz_ = false;
+        bool normal_prior_world_space_ = false;
+        bool normal_prior_usable_ = true;
+        bool normal_prior_srgb_ = false;
+        // Prior-world -> reconstruction-world rotation (row-major), identity
+        // for camera-space priors.
+        std::array<float, 9> normal_prior_world_rotation_{1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
         std::unordered_map<int, lfs::training::kernels::DepthAnchor> depth_anchors_;
         bool depth_anchor_fit_attempted_ = false;
         lfs::training::kernels::DepthPriorType resolved_depth_prior_ =
