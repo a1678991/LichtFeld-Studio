@@ -549,17 +549,31 @@ namespace {
         return chw;
     }
 
-    std::vector<fs::path> collect_images(const fs::path& images_dir) {
+    std::vector<fs::path> collect_images(const fs::path& images_dir, bool recursive) {
         if (!fs::is_directory(images_dir))
             throw std::runtime_error("Images directory does not exist: " + path_to_string(images_dir));
 
         std::vector<fs::path> images;
-        for (fs::recursive_directory_iterator it(images_dir), end; it != end; ++it) {
-            if (it->is_regular_file() && is_image_file(it->path()))
-                images.push_back(it->path());
+        const auto add_if_image = [&images](const fs::directory_entry& entry) {
+            if (entry.is_regular_file() && is_image_file(entry.path()))
+                images.push_back(entry.path());
+        };
+        if (recursive) {
+            for (fs::recursive_directory_iterator it(images_dir), end; it != end; ++it)
+                add_if_image(*it);
+        } else {
+            for (fs::directory_iterator it(images_dir), end; it != end; ++it)
+                add_if_image(*it);
         }
         std::sort(images.begin(), images.end());
         return images;
+    }
+
+    bool is_same_directory(const fs::path& lhs, const fs::path& rhs) {
+        std::error_code ec;
+        if (fs::equivalent(lhs, rhs, ec) && !ec)
+            return true;
+        return lhs.lexically_normal() == rhs.lexically_normal();
     }
 
     fs::path output_path_for(const fs::path& dataset_root,
@@ -998,7 +1012,22 @@ namespace {
         PreprocessPlan plan;
         plan.dataset_root = fs::absolute(params.dataset_path);
         plan.images_dir = plan.dataset_root / params.images_folder;
-        plan.images = collect_images(plan.images_dir);
+
+        // Flat COLMAP exports keep the images next to the sparse model files. Scan the
+        // root non-recursively there so generated depth/normals outputs are never
+        // picked up as inputs on a rerun.
+        bool flat_layout = is_same_directory(plan.images_dir, plan.dataset_root);
+        if (!flat_layout && !fs::is_directory(plan.images_dir) &&
+            fs::is_directory(plan.dataset_root) &&
+            !collect_images(plan.dataset_root, false).empty()) {
+            std::cout << "Images folder '" << params.images_folder
+                      << "' not found; using images in the dataset root (flat layout)\n";
+            flat_layout = true;
+        }
+        if (flat_layout)
+            plan.images_dir = plan.dataset_root;
+
+        plan.images = collect_images(plan.images_dir, !flat_layout);
         if (plan.images.empty())
             throw std::runtime_error("No images found under " + path_to_string(plan.images_dir));
 
