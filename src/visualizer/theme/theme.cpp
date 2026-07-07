@@ -110,21 +110,15 @@ namespace lfs::vis {
             return name;
         }
 
-        bool useLightPopupBackground(const Theme& t) {
-            // Use palette luminance instead of theme name so popup behavior stays
-            // correct even if theme names vary or are edited in JSON files.
-            constexpr float LIGHT_POPUP_BG_THRESHOLD = 0.72f;
-            const float brightness =
-                (t.palette.background.x + t.palette.background.y + t.palette.background.z) / 3.0f;
-            return brightness >= LIGHT_POPUP_BG_THRESHOLD;
+        int colorByte(const float value) {
+            return static_cast<int>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
         }
 
-        ThemeColor mix(const ThemeColor& a, const ThemeColor& b, const float factor) {
-            return {
-                a.x + (b.x - a.x) * factor,
-                a.y + (b.y - a.y) * factor,
-                a.z + (b.z - a.z) * factor,
-                a.w + (b.w - a.w) * factor};
+        ThemePackedColor packColor(const int r, const int g, const int b, const int a) {
+            return (static_cast<ThemePackedColor>(a & 0xff) << 24u) |
+                   (static_cast<ThemePackedColor>(b & 0xff) << 16u) |
+                   (static_cast<ThemePackedColor>(g & 0xff) << 8u) |
+                   static_cast<ThemePackedColor>(r & 0xff);
         }
 
     } // namespace
@@ -151,19 +145,17 @@ namespace lfs::vis {
     }
 
     ThemePackedColor toU32(const ThemeColor& color) {
-        return IM_COL32(
-            static_cast<int>(color.x * 255.0f),
-            static_cast<int>(color.y * 255.0f),
-            static_cast<int>(color.z * 255.0f),
-            static_cast<int>(color.w * 255.0f));
+        return packColor(colorByte(color.x),
+                         colorByte(color.y),
+                         colorByte(color.z),
+                         colorByte(color.w));
     }
 
     ThemePackedColor toU32WithAlpha(const ThemeColor& color, const float alpha) {
-        return IM_COL32(
-            static_cast<int>(color.x * 255.0f),
-            static_cast<int>(color.y * 255.0f),
-            static_cast<int>(color.z * 255.0f),
-            static_cast<int>(alpha * 255.0f));
+        return packColor(colorByte(color.x),
+                         colorByte(color.y),
+                         colorByte(color.z),
+                         colorByte(alpha));
     }
 
     // Theme computed colors
@@ -186,7 +178,7 @@ namespace lfs::vis {
 
     ThemePackedColor Theme::overlay_background_u32() const { return toU32WithAlpha(overlay.background, OVERLAY_BG_ALPHA); }
     ThemePackedColor Theme::overlay_text_u32() const { return toU32(overlay.text); }
-    ThemePackedColor Theme::overlay_shadow_u32() const { return IM_COL32(0, 0, 0, 180); }
+    ThemePackedColor Theme::overlay_shadow_u32() const { return packColor(0, 0, 0, 180); }
     ThemePackedColor Theme::overlay_hint_u32() const { return toU32WithAlpha(overlay.text_dim, OVERLAY_HINT_ALPHA); }
     ThemePackedColor Theme::overlay_border_u32() const { return toU32(overlay.border); }
     ThemePackedColor Theme::overlay_icon_u32() const { return toU32(overlay.icon); }
