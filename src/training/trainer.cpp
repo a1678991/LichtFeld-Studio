@@ -23,6 +23,7 @@
 #include "core/tensor/internal/gpu_slab_allocator.hpp"
 #include "core/tensor/internal/memory_pool.hpp"
 #include "core/tensor/internal/size_bucketed_pool.hpp"
+#include "depth_anchor_cache.hpp"
 #include "diagnostics/vram_profiler.hpp"
 #include "geometry/bounding_box.hpp"
 #include "io/cache_image_loader.hpp"
@@ -61,8 +62,10 @@
 #include <cuda_runtime.h>
 #include <expected>
 #include <format>
+#include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <nvtx3/nvToolsExt.h>
 #include <nvtx3/nvToolsExtCudaRt.h>
@@ -234,15 +237,33 @@ namespace lfs::training {
                 std::vector<lfs::core::NormalPriorSample> samples;
                 const lfs::core::Camera* cam = nullptr;
             };
-            std::vector<RawView> raw_views;
+
+            // The probe reads decode full-resolution PNGs (~tens of ms each) and
+            // are independent, so fan them out; the serial version dominated
+            // training startup on large scenes.
+            std::vector<const lfs::core::Camera*> probe_cams;
             const size_t stride = std::max<size_t>(1, cameras.size() / kProbeViews);
-            for (size_t i = 0; i < cameras.size() && raw_views.size() < kProbeViews; i += stride) {
+            for (size_t i = 0; i < cameras.size() && probe_cams.size() < kProbeViews; i += stride) {
                 const auto* cam = cameras[i];
                 if (cam->camera_width() <= 0 || cam->camera_height() <= 0 ||
                     cam->focal_x() <= 0.0f || cam->focal_y() <= 0.0f) {
                     continue;
                 }
-                auto samples = lfs::core::sample_normal_prior_pixels(cam->normal_path(), kProbeSamplesPerView);
+                probe_cams.push_back(cam);
+            }
+
+            std::vector<std::future<std::vector<lfs::core::NormalPriorSample>>> probe_futures;
+            probe_futures.reserve(probe_cams.size());
+            for (const auto* cam : probe_cams) {
+                probe_futures.push_back(std::async(std::launch::async, [cam] {
+                    return lfs::core::sample_normal_prior_pixels(cam->normal_path(), kProbeSamplesPerView);
+                }));
+            }
+
+            std::vector<RawView> raw_views;
+            raw_views.reserve(probe_cams.size());
+            for (size_t idx = 0; idx < probe_cams.size(); ++idx) {
+                auto samples = probe_futures[idx].get();
                 if (samples.empty()) {
                     continue;
                 }
@@ -262,7 +283,7 @@ namespace lfs::training {
                         deviation_srgb.push_back(std::abs(std::sqrt(norm_srgb_sq) - 1.0f));
                     }
                 }
-                raw_views.push_back(RawView{std::move(samples), cam});
+                raw_views.push_back(RawView{std::move(samples), probe_cams[idx]});
             }
             if (raw_views.empty() || (deviation_linear.empty() && deviation_srgb.empty())) {
                 result.description = "no probeable normal maps";
@@ -2353,6 +2374,11 @@ namespace lfs::training {
     void Trainer::fitDepthAnchors(const size_t cameras_with_depth) {
         nvtxRangePush("fit_depth_anchors");
         const auto fit_start = std::chrono::steady_clock::now();
+        const auto phase_ms = [](std::chrono::steady_clock::time_point start) {
+            return std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - start)
+                .count();
+        };
 
         depth_anchors_.clear();
         depth_anchor_fit_attempted_ = false;
@@ -2368,107 +2394,51 @@ namespace lfs::training {
         }
         depth_anchor_fit_attempted_ = true;
 
-        // Robust world-space bounds of the anchor cloud: sparse reconstructions
-        // carry extreme outliers that poison the per-camera fits.
-        float aabb_lo[3] = {-std::numeric_limits<float>::infinity(),
-                            -std::numeric_limits<float>::infinity(),
-                            -std::numeric_limits<float>::infinity()};
-        float aabb_hi[3] = {std::numeric_limits<float>::infinity(),
-                            std::numeric_limits<float>::infinity(),
-                            std::numeric_limits<float>::infinity()};
-        {
-            const size_t bbox_stride = std::max<size_t>(1, num_points / 100000);
-            const auto means_cpu = means.cpu().contiguous();
-            const float* mp = means_cpu.ptr<float>();
-            std::array<std::vector<float>, 3> axis_vals;
-            for (auto& v : axis_vals) {
-                v.reserve(num_points / bbox_stride + 1);
-            }
-            for (size_t i = 0; i < num_points; i += bbox_stride) {
-                for (int k = 0; k < 3; ++k) {
-                    const float val = mp[i * 3 + k];
-                    if (std::isfinite(val)) {
-                        axis_vals[k].push_back(val);
-                    }
-                }
-            }
-            for (int k = 0; k < 3; ++k) {
-                auto& v = axis_vals[k];
-                if (v.size() < 100) {
-                    continue;
-                }
-                const size_t lo_idx = v.size() / 50;
-                const size_t hi_idx = v.size() - 1 - v.size() / 50;
-                std::nth_element(v.begin(), v.begin() + lo_idx, v.end());
-                const float lo = v[lo_idx];
-                std::nth_element(v.begin(), v.begin() + hi_idx, v.end());
-                const float hi = v[hi_idx];
-                const float margin = 0.5f * std::max(hi - lo, 1e-3f);
-                aabb_lo[k] = lo - margin;
-                aabb_hi[k] = hi + margin;
+        // Prefer a precomputed sidecar (written by `preprocess` or a prior run);
+        // fall back to fitting here and write it through so the next run is fast.
+        const auto& cameras = train_dataset_->get_cameras();
+        const auto sidecar = depthAnchorSidecarPath(cameras);
+
+        nvtxRangePush("depth_anchors/fingerprint");
+        const auto fingerprint_start = std::chrono::steady_clock::now();
+        const auto fingerprint = computeAnchorFingerprint(cameras);
+        const auto fingerprint_ms = phase_ms(fingerprint_start);
+        nvtxRangePop();
+
+        RawDepthAnchorMap raw;
+        nvtxRangePush("depth_anchors/read_sidecar");
+        const auto read_start = std::chrono::steady_clock::now();
+        auto cached = readDepthAnchorSidecar(sidecar, fingerprint);
+        const auto read_ms = phase_ms(read_start);
+        nvtxRangePop();
+
+        double source_ms = read_ms;
+        if (cached) {
+            raw = std::move(*cached);
+            LOG_INFO("Depth anchors: loaded {} cached anchors from {}", raw.size(), sidecar.string());
+        } else {
+            nvtxRangePush("depth_anchors/compute");
+            const auto compute_start = std::chrono::steady_clock::now();
+            raw = computeRawDepthAnchors(
+                means, cameras, params_.dataset.resize_factor, params_.dataset.max_width);
+            source_ms = phase_ms(compute_start);
+            nvtxRangePop();
+            if (!sidecar.empty() && !writeDepthAnchorSidecar(sidecar, raw, fingerprint)) {
+                LOG_WARN("Depth anchors: failed to write sidecar {}", sidecar.string());
             }
         }
+        LOG_INFO("Depth anchors: fingerprint {:.1f} ms, {} {:.1f} ms",
+                 fingerprint_ms, cached ? "sidecar load" : "recompute", source_ms);
 
+        nvtxRangePush("depth_anchors/resolve");
         size_t processed = 0;
-        for (const auto& cam : train_dataset_->get_cameras()) {
-            if (!cam->has_depth()) {
+        for (const auto& cam : cameras) {
+            if (!cam || !cam->has_depth()) {
                 continue;
             }
             ++processed;
-            auto prior = cam->load_and_get_depth(
-                params_.dataset.resize_factor,
-                params_.dataset.max_width);
-            if (!prior.is_valid() || prior.numel() == 0) {
-                continue;
-            }
-            if (prior.ndim() == 3 && prior.shape()[0] == 1) {
-                prior = prior.squeeze(0);
-            }
-            if (!prior.is_contiguous()) {
-                prior = prior.contiguous();
-            }
-            if (prior.ndim() != 2) {
-                cam->release_depth_cache();
-                continue;
-            }
-
-            const int prior_w = static_cast<int>(prior.shape()[1]);
-            const int prior_h = static_cast<int>(prior.shape()[0]);
-            const float sx = static_cast<float>(prior_w) / static_cast<float>(cam->camera_width());
-            const float sy = static_cast<float>(prior_h) / static_cast<float>(cam->camera_height());
-
-            // The prior's lazy ops materialize on their own stream; the fit
-            // reads raw pointers, so settle the device first (startup only).
-            prior.ptr<float>();
-            cudaDeviceSynchronize();
-
-            const auto anchor = lfs::training::kernels::fit_depth_anchor(
-                means.ptr<float>(),
-                num_points,
-                cam->world_view_transform_ptr(),
-                cam->focal_x() * sx,
-                cam->focal_y() * sy,
-                cam->center_x() * sx,
-                cam->center_y() * sy,
-                prior.ptr<float>(),
-                prior_w,
-                prior_h,
-                0.01f,
-                aabb_lo,
-                aabb_hi);
-            cam->release_depth_cache();
-
-            static const bool anchor_diag = env_flag_enabled("LFS_DEPTH_LOSS_DIAG");
-            if (anchor_diag) {
-                LOG_INFO("[DEPTH_ANCHOR] camera='{}' valid={} model={} scale={:.6f} shift={:.6f} floor={:.4f} corr={:.4f} samples={} disp_valid={} disp_corr={:.4f} depth_valid={} depth_corr={:.4f}",
-                         cam->image_name(), anchor.valid ? 1 : 0, anchor.model,
-                         anchor.scale, anchor.shift, anchor.floor, anchor.corr, anchor.samples,
-                         anchor.disparity.valid ? 1 : 0, anchor.disparity.corr,
-                         anchor.depth.valid ? 1 : 0, anchor.depth.corr);
-            }
-
-            if (anchor.disparity.valid || anchor.depth.valid) {
-                depth_anchors_[cam->uid()] = anchor;
+            if (const auto it = raw.find(cam->image_name()); it != raw.end()) {
+                depth_anchors_[cam->uid()] = it->second;
             }
         }
 
@@ -2540,6 +2510,7 @@ namespace lfs::training {
             ++reliable_anchors;
             reliable_corr_sum += std::fabs(anchor.corr);
         }
+        nvtxRangePop(); // depth_anchors/resolve
 
         const auto fit_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - fit_start)
@@ -5594,8 +5565,15 @@ namespace lfs::training {
                     LOG_INFO("Normal maps available for {}/{} training cameras",
                              normal_cameras.size(), train_dataset_->get_cameras().size());
 
+                    nvtxRangePush("resolve_normal_prior_convention");
+                    const auto normal_resolve_start = std::chrono::steady_clock::now();
                     const auto convention = resolve_normal_prior_convention(
                         normal_cameras, params_.optimization.normal_loss_space);
+                    const auto normal_resolve_ms = std::chrono::duration<double, std::milli>(
+                                                       std::chrono::steady_clock::now() - normal_resolve_start)
+                                                       .count();
+                    nvtxRangePop();
+                    LOG_INFO("Normal priors: convention resolve {:.1f} ms", normal_resolve_ms);
                     normal_prior_usable_ = convention.usable;
                     normal_prior_flip_yz_ = convention.flip_yz;
                     normal_prior_world_space_ = convention.world_space;

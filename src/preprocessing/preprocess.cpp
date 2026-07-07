@@ -4,7 +4,12 @@
 
 #include "preprocessing/preprocess.hpp"
 
+#include "core/logger.hpp"
 #include "core/path_utils.hpp"
+#include "core/point_cloud.hpp"
+#include "core/tensor.hpp"
+#include "depth_anchor_cache.hpp"
+#include "io/loader.hpp"
 
 #include "indicators.hpp"
 #include <OpenImageIO/imagebuf.h>
@@ -946,6 +951,77 @@ namespace {
                mode == lfs::core::param::PreprocessOutputMode::Both;
     }
 
+    // Fits each camera's depth prior against the COLMAP point cloud once and
+    // writes a sidecar next to the depth maps, so depth-loss training skips the
+    // per-camera anchor fit at startup. Requires a COLMAP scene; a bare image
+    // folder is skipped (the trainer fits and caches it on first run instead).
+    void precompute_depth_anchors(const lfs::core::param::PreprocessParameters& params) {
+        if (!needs_depth(params.mode)) {
+            return;
+        }
+        try {
+            auto loader = lfs::io::Loader::create();
+            lfs::io::LoadOptions options;
+            options.images_folder = params.images_folder;
+            auto result = loader->load(params.dataset_path, options);
+            if (!result) {
+                LOG_INFO("Depth anchors: scene load failed ({}); trainer will fit at startup",
+                         result.error().format());
+                return;
+            }
+            const auto* scene = std::get_if<lfs::io::LoadedScene>(&result->data);
+            if (!scene || !scene->point_cloud || scene->cameras.empty()) {
+                LOG_INFO("Depth anchors: no COLMAP point cloud; trainer will fit at startup");
+                return;
+            }
+
+            const auto sidecar = lfs::training::depthAnchorSidecarPath(scene->cameras);
+            if (sidecar.empty()) {
+                LOG_INFO("Depth anchors: no depth priors resolved for any camera; skipping");
+                return;
+            }
+
+            auto means = scene->point_cloud->means;
+            if (!means.is_valid() || means.numel() == 0) {
+                LOG_INFO("Depth anchors: empty point cloud; skipping");
+                return;
+            }
+            means = means.to(lfs::core::Device::CUDA);
+
+            const auto fingerprint = lfs::training::computeAnchorFingerprint(scene->cameras);
+
+            std::optional<indicators::ProgressBar> anchor_bar;
+            lfs::training::DepthAnchorProgress progress;
+            if (stdout_is_tty()) {
+                anchor_bar.emplace();
+                style_progress_bar(*anchor_bar, "Depth anchors ");
+                progress = [&anchor_bar](std::size_t done, std::size_t total) {
+                    if (total == 0)
+                        return;
+                    anchor_bar->set_option(indicators::option::PostfixText(std::format("{}/{}", done, total)));
+                    anchor_bar->set_progress(done * 100 / total);
+                };
+            }
+
+            const auto anchors = lfs::training::computeRawDepthAnchors(means, scene->cameras, -1, 0, progress);
+
+            if (anchor_bar && !anchor_bar->is_completed()) {
+                anchor_bar->set_progress(100);
+                anchor_bar->mark_as_completed();
+                std::cout << std::endl;
+            }
+
+            if (lfs::training::writeDepthAnchorSidecar(sidecar, anchors, fingerprint)) {
+                std::cout << "Depth anchors: wrote " << anchors.size() << " anchors to "
+                          << path_to_string(sidecar) << "\n";
+            } else {
+                LOG_WARN("Depth anchors: failed to write sidecar {}", path_to_string(sidecar));
+            }
+        } catch (const std::exception& e) {
+            LOG_WARN("Depth anchors: precompute failed: {}", e.what());
+        }
+    }
+
     bool should_write_output(bool output_requested,
                              bool overwrite,
                              const fs::path& output_path) {
@@ -1167,6 +1243,7 @@ namespace lfs::preprocessing {
             if (plan.jobs.empty()) {
                 print_plan_summary(params, plan, nullptr);
                 std::cout << "No outputs need preprocessing; model inference skipped.\n";
+                precompute_depth_anchors(params);
                 std::cout << "Done. processed=0 skipped=" << plan.skipped << "\n";
                 return 0;
             }
@@ -1179,6 +1256,7 @@ namespace lfs::preprocessing {
                 throw std::runtime_error("Model file does not exist: " + path_to_string(model_path));
 
             process_dataset(params, model_path, plan);
+            precompute_depth_anchors(params);
             return 0;
         } catch (const std::exception& e) {
             std::cerr << "preprocess: " << e.what() << "\n";

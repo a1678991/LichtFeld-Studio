@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cuda_runtime.h>
+#include <vector>
 
 namespace lfs::training::kernels {
 
@@ -93,6 +94,29 @@ namespace lfs::training::kernels {
         const float aabb_lo[3],
         const float aabb_hi[3],
         cudaStream_t stream = nullptr);
+
+    // GPU half of fit_depth_anchor: projects the anchor cloud into the prior and
+    // returns the raw (prior value, camera-space depth) sample pairs. Empty when
+    // too few samples land in view. Synchronizes the stream; startup use only.
+    [[nodiscard]] std::vector<float2> collect_depth_anchor_samples(
+        const float* points_xyz, // [N,3] CUDA
+        size_t num_points,
+        const float* w2c, // [16] CUDA row-major world-to-camera
+        float fx,
+        float fy,
+        float cx,
+        float cy,
+        const float* prior, // [H,W] CUDA
+        int width,
+        int height,
+        float near_plane,
+        const float aabb_lo[3],
+        const float aabb_hi[3],
+        cudaStream_t stream = nullptr);
+
+    // CPU half of fit_depth_anchor: robust affine fits over collected samples.
+    // Pure host work — safe to run across a worker thread pool.
+    [[nodiscard]] DepthAnchor fit_depth_anchor_from_samples(const std::vector<float2>& pairs);
 
     [[nodiscard]] size_t depth_loss_partial_count(size_t num_pixels);
 

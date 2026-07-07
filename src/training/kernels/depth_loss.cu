@@ -684,7 +684,7 @@ namespace lfs::training::kernels {
                2 * static_cast<size_t>(kPrimaryStatCount) * num_blocks;
     }
 
-    DepthAnchor fit_depth_anchor(
+    std::vector<float2> collect_depth_anchor_samples(
         const float* points_xyz,
         const size_t num_points,
         const float* w2c,
@@ -701,9 +701,8 @@ namespace lfs::training::kernels {
         cudaStream_t stream) {
         stream = resolve_stream(stream);
 
-        DepthAnchor anchor;
         if (num_points == 0) {
-            return anchor;
+            return {};
         }
         const size_t stride = std::max<size_t>(1, num_points / kMaxAnchorSamples);
         const size_t num_samples = (num_points + stride - 1) / stride;
@@ -714,11 +713,11 @@ namespace lfs::training::kernels {
         float2* pairs_dev = nullptr;
         int* count_dev = nullptr;
         if (cudaMallocAsync(&pairs_dev, sizeof(float2) * kMaxAnchorSamples, stream) != cudaSuccess) {
-            return anchor;
+            return {};
         }
         if (cudaMallocAsync(&count_dev, sizeof(int), stream) != cudaSuccess) {
             cudaFreeAsync(pairs_dev, stream);
-            return anchor;
+            return {};
         }
         cudaMemsetAsync(count_dev, 0, sizeof(int), stream);
 
@@ -732,7 +731,7 @@ namespace lfs::training::kernels {
             LOG_ERROR("depth_anchor_collect_kernel launch failed: {}", cudaGetErrorString(err));
             cudaFreeAsync(pairs_dev, stream);
             cudaFreeAsync(count_dev, stream);
-            return anchor;
+            return {};
         }
 
         int pair_count = 0;
@@ -742,7 +741,7 @@ namespace lfs::training::kernels {
         if (pair_count < kMinAnchorSamples) {
             cudaFreeAsync(pairs_dev, stream);
             cudaFreeAsync(count_dev, stream);
-            return anchor;
+            return {};
         }
 
         std::vector<float2> pairs(static_cast<size_t>(pair_count));
@@ -751,8 +750,15 @@ namespace lfs::training::kernels {
         cudaStreamSynchronize(stream);
         cudaFreeAsync(pairs_dev, stream);
         cudaFreeAsync(count_dev, stream);
+        return pairs;
+    }
 
+    DepthAnchor fit_depth_anchor_from_samples(const std::vector<float2>& pairs) {
+        DepthAnchor anchor;
         const size_t n = pairs.size();
+        if (n < static_cast<size_t>(kMinAnchorSamples)) {
+            return anchor;
+        }
         std::vector<float> ts(n);
         std::vector<float> zs(n);
         for (size_t i = 0; i < n; ++i) {
@@ -827,6 +833,26 @@ namespace lfs::training::kernels {
         }
 
         return anchor;
+    }
+
+    DepthAnchor fit_depth_anchor(
+        const float* points_xyz,
+        const size_t num_points,
+        const float* w2c,
+        const float fx,
+        const float fy,
+        const float cx,
+        const float cy,
+        const float* prior,
+        const int width,
+        const int height,
+        const float near_plane,
+        const float aabb_lo[3],
+        const float aabb_hi[3],
+        cudaStream_t stream) {
+        return fit_depth_anchor_from_samples(collect_depth_anchor_samples(
+            points_xyz, num_points, w2c, fx, fy, cx, cy,
+            prior, width, height, near_plane, aabb_lo, aabb_hi, stream));
     }
 
     void launch_depth_loss(
