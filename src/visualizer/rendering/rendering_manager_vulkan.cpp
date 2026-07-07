@@ -132,16 +132,27 @@ namespace lfs::vis {
             return frame_dirty != 0 ? frame_dirty : DirtyFlag::SPLATS;
         }
 
-        [[nodiscard]] float normalizedDepthForDisplay(float depth, float lo, float hi) {
-            lo = std::max(lo, 1.0e-4f);
-            hi = std::max(hi, lo + 1.0e-4f);
-            depth = std::clamp(depth, lo, hi);
+        [[nodiscard]] std::pair<float, float> robustDepthDisplayRange(const float* src, std::size_t count) {
+            std::vector<float> valid;
+            valid.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                const float d = src[i];
+                if (std::isfinite(d) && d > 0.0f && d < 1.0e9f) {
+                    valid.push_back(d);
+                }
+            }
+            if (valid.size() < 2) {
+                return {0.0f, 0.0f};
+            }
 
-            const float linear_t = std::clamp((depth - lo) / std::max(hi - lo, 1.0e-5f), 0.0f, 1.0f);
-            const float log_span = std::max(std::log2(hi / lo), 1.0e-4f);
-            const float log_t = std::clamp(std::log2(depth / lo) / log_span, 0.0f, 1.0f);
-            const float log_weight = glm::smoothstep(1.75f, 24.0f, hi / lo);
-            return glm::smoothstep(0.0f, 1.0f, glm::mix(linear_t, log_t, log_weight));
+            constexpr float kLoQuantile = 0.02f;
+            constexpr float kHiQuantile = 0.98f;
+            const auto quantile = [&](float q) {
+                const auto n = static_cast<std::size_t>(q * static_cast<float>(valid.size() - 1));
+                std::nth_element(valid.begin(), valid.begin() + n, valid.end());
+                return valid[n];
+            };
+            return {quantile(kLoQuantile), quantile(kHiQuantile)};
         }
 
         [[nodiscard]] glm::vec3 depthPaletteForDisplay(float near_t) {
@@ -189,14 +200,16 @@ namespace lfs::vis {
                 return {};
             }
 
+            const auto [range_lo, range_hi] = robustDepthDisplayRange(src, pixel_count);
+            const float range_span = range_hi - range_lo;
+
             const bool grayscale =
                 settings.depth_visualization_mode == lfs::rendering::DepthVisualizationMode::Grayscale;
             for (std::size_t idx = 0; idx < pixel_count; ++idx) {
                 const float d = src[idx];
                 glm::vec3 color = settings.background_color;
-                if (std::isfinite(d) && d > 0.0f && d < 1.0e9f) {
-                    const float depth_t =
-                        normalizedDepthForDisplay(d, settings.depth_view_min, settings.depth_view_max);
+                if (std::isfinite(d) && d > 0.0f && d < 1.0e9f && range_span > 1.0e-6f) {
+                    const float depth_t = std::clamp((d - range_lo) / range_span, 0.0f, 1.0f);
                     const float near_t = 1.0f - depth_t;
                     color = grayscale ? glm::vec3(near_t) : depthPaletteForDisplay(near_t);
                 }
