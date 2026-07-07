@@ -15,7 +15,6 @@
 #include "gui/global_context_menu.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "gui/rml_menu_bar.hpp"
-#include "gui/ui_widgets.hpp"
 #include "gui/utils/file_association.hpp"
 #include "gui/utils/native_file_dialog.hpp"
 #include "gui/vulkan_ui_texture.hpp"
@@ -56,14 +55,15 @@
 
 #include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_mouse.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <future>
-#include <implot.h>
 #include <memory>
 #include <mutex>
 #include <stack>
@@ -71,7 +71,6 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <imgui.h>
 
 #ifdef _WIN32
 #include <shellapi.h>
@@ -95,21 +94,6 @@ namespace lfs::python {
         constexpr float ALERT_BG_ALPHA = 0.15f;
         constexpr int PROP_ENUM_COLOR_COUNT = 3;
         constexpr float BOX_BORDER_SIZE = 1.0f;
-
-        ImVec4 tuple_to_imvec4(const std::tuple<float, float, float, float>& t) {
-            return {std::get<0>(t), std::get<1>(t), std::get<2>(t), std::get<3>(t)};
-        }
-
-        ImVec4 tuple_to_imvec4(const nb::object& obj) {
-            const auto len = nb::len(obj);
-            assert(len == 3 || len == 4);
-            if (len == 3) {
-                auto t = nb::cast<std::tuple<float, float, float>>(obj);
-                return {std::get<0>(t), std::get<1>(t), std::get<2>(t), 1.0f};
-            }
-            auto t = nb::cast<std::tuple<float, float, float, float>>(obj);
-            return {std::get<0>(t), std::get<1>(t), std::get<2>(t), std::get<3>(t)};
-        }
 
         // Icon cache for Python toolbar
         std::unordered_map<std::string, uint64_t> g_icon_cache;
@@ -212,6 +196,14 @@ namespace lfs::python {
 
             uint64_t texture_id() const {
                 return texture_ ? static_cast<uint64_t>(texture_->textureId()) : 0;
+            }
+
+            std::string rml_src_url(const int width, const int height) const {
+                if (!valid())
+                    return {};
+                const int resolved_width = width > 0 ? width : width_;
+                const int resolved_height = height > 0 ? height : height_;
+                return texture_->rmlSrcUrl(resolved_width, resolved_height);
             }
 
             int width() const { return width_; }
@@ -328,6 +320,22 @@ namespace lfs::python {
             std::lock_guard lock(g_python_operator_mutex);
             g_python_operator_instances.erase(id);
         }
+
+    } // namespace
+
+    std::string rml_src_for_dynamic_texture(const uint64_t texture_id, const int width, const int height) {
+        if (texture_id == 0)
+            return {};
+
+        std::lock_guard lock(g_dynamic_textures_mutex);
+        for (const auto* texture : g_all_dynamic_textures) {
+            if (texture && texture->texture_id() == texture_id)
+                return texture->rml_src_url(width, height);
+        }
+        return {};
+    }
+
+    namespace {
 
         void push_python_operator_undo_entry(const std::string& label, nb::object instance) {
             if (!instance.is_valid() || instance.is_none()) {
@@ -520,42 +528,52 @@ namespace lfs::python {
         bool draw_prop_enum_button(nb::object data, const std::string& prop_id,
                                    const std::string& value, const std::string& text) {
             const std::string current = nb::cast<std::string>(data.attr(prop_id.c_str()));
-            const bool selected = (current == value);
-            const std::string& display = text.empty() ? value : text;
-
-            if (selected) {
-                const auto theme = get_current_theme();
-                ImGui::PushStyleColor(ImGuiCol_Button, tuple_to_imvec4(theme.palette.primary));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, tuple_to_imvec4(theme.palette.primary));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, tuple_to_imvec4(theme.palette.primary_dim));
-            }
-            const bool clicked = ImGui::Button(display.c_str());
-            if (selected)
-                ImGui::PopStyleColor(PROP_ENUM_COLOR_COUNT);
-
-            if (clicked && !selected) {
-                data.attr(prop_id.c_str()) = nb::cast(value);
-                return true;
-            }
+            (void)text;
+            (void)value;
+            (void)current;
             return false;
         }
 
         // Window flags for Python bindings
         struct PyWindowFlags {
             static constexpr int NONE = 0;
-            static constexpr int NoScrollbar = ImGuiWindowFlags_NoScrollbar;
-            static constexpr int NoScrollWithMouse = ImGuiWindowFlags_NoScrollWithMouse;
-            static constexpr int MenuBar = ImGuiWindowFlags_MenuBar;
-            static constexpr int NoResize = ImGuiWindowFlags_NoResize;
-            static constexpr int NoMove = ImGuiWindowFlags_NoMove;
-            static constexpr int NoCollapse = ImGuiWindowFlags_NoCollapse;
-            static constexpr int AlwaysAutoResize = ImGuiWindowFlags_AlwaysAutoResize;
-            static constexpr int NoTitleBar = ImGuiWindowFlags_NoTitleBar;
-            static constexpr int NoNavFocus = ImGuiWindowFlags_NoNavFocus;
-            static constexpr int NoInputs = ImGuiWindowFlags_NoInputs;
-            static constexpr int NoBackground = ImGuiWindowFlags_NoBackground;
-            static constexpr int NoFocusOnAppearing = ImGuiWindowFlags_NoFocusOnAppearing;
-            static constexpr int NoBringToFrontOnFocus = ImGuiWindowFlags_NoBringToFrontOnFocus;
+            static constexpr int NoScrollbar = 1 << 0;
+            static constexpr int NoScrollWithMouse = 1 << 1;
+            static constexpr int MenuBar = 1 << 2;
+            static constexpr int NoResize = 1 << 3;
+            static constexpr int NoMove = 1 << 4;
+            static constexpr int NoCollapse = 1 << 5;
+            static constexpr int AlwaysAutoResize = 1 << 6;
+            static constexpr int NoTitleBar = 1 << 7;
+            static constexpr int NoNavFocus = 1 << 8;
+            static constexpr int NoInputs = 1 << 9;
+            static constexpr int NoBackground = 1 << 10;
+            static constexpr int NoFocusOnAppearing = 1 << 11;
+            static constexpr int NoBringToFrontOnFocus = 1 << 12;
+        };
+
+        enum class PyKey {
+            ESCAPE,
+            ENTER,
+            TAB,
+            BACKSPACE,
+            DELETE_KEY,
+            SPACE,
+            LEFT,
+            RIGHT,
+            UP,
+            DOWN,
+            HOME,
+            END,
+            F,
+            I,
+            M,
+            R,
+            T,
+            KEY_1,
+            MINUS,
+            EQUAL,
+            F2,
         };
 
         // Image texture preload cache for Python image preview
@@ -1190,37 +1208,19 @@ namespace lfs::python {
         ctx.split_factor = split_factor_;
         ctx.child_index = 0;
         ctx.is_first_child = true;
-        ctx.available_width = ImGui::GetContentRegionAvail().x;
-        ctx.cursor_start_x = ImGui::GetCursorPosX();
+        ctx.available_width = std::get<0>(parent_->get_content_region_avail());
+        ctx.cursor_start_x = 0.0f;
         ctx.grid_columns = grid_columns_;
 
         switch (type_) {
-        case LayoutType::Split:
-            ImGui::BeginGroup();
-            break;
-        case LayoutType::Box: {
-            const auto theme = get_current_theme();
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, theme.sizes.frame_rounding);
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, tuple_to_imvec4(theme.palette.surface));
-            ImGui::PushStyleColor(ImGuiCol_Border, tuple_to_imvec4(theme.palette.border));
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, BOX_BORDER_SIZE);
-            const std::string id = "##pybox_" + std::to_string(parent_->next_box_id());
-            ImGui::BeginChild(id.c_str(), {0, 0},
-                              ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-            break;
-        }
         case LayoutType::GridFlow: {
             int cols = grid_columns_;
             if (cols <= 0) {
-                const float avail = ImGui::GetContentRegionAvail().x;
+                const float avail = ctx.available_width;
                 cols = std::max(1, static_cast<int>(avail / GRID_AUTO_COLUMN_WIDTH));
             }
             ctx.grid_actual_columns = cols;
-            const std::string id = "##pygrid_" + std::to_string(parent_->next_grid_id());
-            ctx.table_active =
-                ImGui::BeginTable(id.c_str(), cols, ImGuiTableFlags_SizingStretchSame);
-            if (ctx.table_active)
-                ImGui::TableNextRow();
+            ctx.table_active = cols > 0;
             break;
         }
         default:
@@ -1240,24 +1240,10 @@ namespace lfs::python {
         g_layout_stack.pop();
 
         switch (ctx.type) {
-        case LayoutType::Split:
-            if (ctx.child_index > 0) {
-                ImGui::PopItemWidth();
-                ImGui::EndGroup();
-            }
-            ImGui::EndGroup();
-            break;
         case LayoutType::Row:
-            break;
         case LayoutType::Box:
-            ImGui::EndChild();
-            ImGui::PopStyleColor(2);
-            ImGui::PopStyleVar(2);
-            break;
         case LayoutType::GridFlow:
-            if (ctx.table_active)
-                ImGui::EndTable();
-            break;
+        case LayoutType::Split:
         default:
             break;
         }
@@ -1270,36 +1256,18 @@ namespace lfs::python {
         auto& ctx = g_layout_stack.top();
         switch (ctx.type) {
         case LayoutType::Row:
-            if (!ctx.is_first_child)
-                ImGui::SameLine();
             ctx.is_first_child = false;
             break;
         case LayoutType::Column:
             ctx.is_first_child = false;
             break;
         case LayoutType::Split:
-            if (ctx.child_index == 0) {
-                float w = ctx.available_width * ctx.split_factor;
-                ImGui::BeginGroup();
-                ImGui::PushItemWidth(w - ImGui::GetStyle().ItemSpacing.x);
-            } else if (ctx.child_index == 1) {
-                ImGui::PopItemWidth();
-                ImGui::EndGroup();
-                ImGui::SameLine();
-                float w = ctx.available_width * (1.0f - ctx.split_factor);
-                ImGui::BeginGroup();
-                ImGui::PushItemWidth(w - ImGui::GetStyle().ItemSpacing.x);
-            } else if (ctx.child_index == 2) {
+            if (ctx.child_index == 2) {
                 LOG_WARN("Split layout received more than 2 children");
             }
             ctx.child_index++;
             break;
         case LayoutType::GridFlow:
-            if (ctx.table_active) {
-                if (ctx.child_index > 0 && ctx.child_index % ctx.grid_actual_columns == 0)
-                    ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-            }
             ctx.child_index++;
             break;
         case LayoutType::Box:
@@ -1320,38 +1288,15 @@ namespace lfs::python {
 
     void PySubLayout::apply_state() {
         const auto eff = effective_state();
-        if (!eff.enabled) {
-            ImGui::BeginDisabled(true);
-            disabled_pushed_ = true;
-        }
-        if (eff.alert) {
-            const auto theme = get_current_theme();
-            const auto err = tuple_to_imvec4(theme.palette.error);
-            ImGui::PushStyleColor(ImGuiCol_Text, err);
-            ImGui::PushStyleColor(ImGuiCol_FrameBg,
-                                  ImVec4(err.x, err.y, err.z, ALERT_BG_ALPHA));
-            color_push_count_ += 2;
-        }
-        const float scale = std::max(eff.scale_x, eff.scale_y);
-        if (scale != 1.0f) {
-            ImGui::SetWindowFontScale(scale);
-            font_scale_pushed_ = true;
-        }
+        disabled_pushed_ = !eff.enabled;
+        color_push_count_ = eff.alert ? 1 : 0;
+        font_scale_pushed_ = std::max(eff.scale_x, eff.scale_y) != 1.0f;
     }
 
     void PySubLayout::pop_per_item_state() {
-        if (font_scale_pushed_) {
-            ImGui::SetWindowFontScale(1.0f);
-            font_scale_pushed_ = false;
-        }
-        if (color_push_count_ > 0) {
-            ImGui::PopStyleColor(color_push_count_);
-            color_push_count_ = 0;
-        }
-        if (disabled_pushed_) {
-            ImGui::EndDisabled();
-            disabled_pushed_ = false;
-        }
+        font_scale_pushed_ = false;
+        color_push_count_ = 0;
+        disabled_pushed_ = false;
         if (own_state_.alert)
             own_state_.alert = false;
     }
@@ -1703,11 +1648,10 @@ namespace lfs::python {
     }
 
     nb::object PyUILayout::operator_(const std::string& operator_id, const std::string& text,
-                                     const std::string& icon) {
+                                     const std::string& /*icon*/) {
         const auto* desc = vis::op::operators().getDescriptor(operator_id);
-        std::string label = text.empty() ? (desc ? desc->label : operator_id) : text;
-        std::string btn_text = LOC(label.c_str());
-
+        const std::string label = text.empty() ? (desc ? desc->label : operator_id) : text;
+        const std::string btn_text = LOC(label.c_str());
         const bool can_execute = vis::op::operators().poll(operator_id);
 
         if (collecting_ && collect_target_) {
@@ -1717,98 +1661,47 @@ namespace lfs::python {
             item.operator_id = operator_id;
             item.enabled = can_execute;
             collect_target_->items.push_back(std::move(item));
-            return nb::cast(PyOperatorProperties(operator_id));
         }
 
-        bool clicked = false;
-        if (menu_depth_ > 0) {
-            clicked = ImGui::MenuItem(btn_text.c_str(), nullptr, false, can_execute);
-        } else {
-            if (!can_execute) {
-                ImGui::BeginDisabled();
-            }
-
-            if (!icon.empty()) {
-                unsigned int tex_id = load_icon_texture(icon);
-                if (tex_id) {
-                    float size = ImGui::GetTextLineHeight();
-                    clicked = ImGui::ImageButton(operator_id.c_str(), static_cast<ImTextureID>(tex_id),
-                                                 ImVec2(size, size));
-                    if (!btn_text.empty()) {
-                        ImGui::SameLine();
-                        ImGui::TextUnformatted(btn_text.c_str());
-                    }
-                } else {
-                    clicked = ImGui::Button(btn_text.c_str());
-                }
-            } else {
-                clicked = ImGui::Button(btn_text.c_str());
-            }
-
-            if (!can_execute) {
-                ImGui::EndDisabled();
-            }
-        }
-
-        auto props = PyOperatorProperties(operator_id);
-
-        if (clicked) {
-            vis::op::operators().invoke(operator_id);
-        }
-
-        return nb::cast(props);
+        return nb::cast(PyOperatorProperties(operator_id));
     }
 
     std::tuple<bool, int> PyUILayout::prop_search(nb::object /*data*/, const std::string& prop_id,
                                                   nb::object search_data, const std::string& search_prop,
-                                                  const std::string& text) {
-        std::vector<std::string> items;
+                                                  const std::string& /*text*/) {
         int current_idx = 0;
-
         try {
             if (nb::hasattr(search_data, search_prop.c_str())) {
                 nb::object collection = search_data.attr(search_prop.c_str());
                 if (nb::hasattr(collection, "__iter__")) {
-                    size_t idx = 0;
                     for (auto item : collection) {
-                        if (nb::hasattr(item, "name")) {
-                            items.push_back(nb::cast<std::string>(item.attr("name")));
-                        } else {
-                            items.push_back("Item " + std::to_string(idx));
+                        if (nb::hasattr(item, "selected") && nb::cast<bool>(item.attr("selected"))) {
+                            break;
                         }
-                        ++idx;
+                        ++current_idx;
                     }
                 }
             }
         } catch (...) {
             LOG_WARN("prop_search: failed to enumerate items for '{}'", prop_id);
+            current_idx = 0;
         }
-
-        std::string label = text.empty() ? prop_id : text;
-        auto [changed, new_idx] = combo(label, current_idx, items);
-        return {changed, new_idx};
+        return {false, current_idx};
     }
 
     std::tuple<int, int> PyUILayout::template_list(const std::string& /*list_type_id*/,
-                                                   const std::string& list_id,
+                                                   const std::string& /*list_id*/,
                                                    nb::object data, const std::string& prop_id,
                                                    nb::object active_data, const std::string& active_prop,
-                                                   int rows) {
-        std::vector<std::string> items;
+                                                   int /*rows*/) {
         int active_idx = 0;
-
+        int item_count = 0;
         try {
             if (nb::hasattr(data, prop_id.c_str())) {
                 nb::object collection = data.attr(prop_id.c_str());
                 if (nb::hasattr(collection, "__iter__")) {
-                    size_t idx = 0;
-                    for (auto item : collection) {
-                        if (nb::hasattr(item, "name")) {
-                            items.push_back(nb::cast<std::string>(item.attr("name")));
-                        } else {
-                            items.push_back("Item " + std::to_string(idx));
-                        }
-                        ++idx;
+                    for (auto /*item*/ : collection) {
+                        ++item_count;
                     }
                 }
             }
@@ -1816,711 +1709,132 @@ namespace lfs::python {
                 active_idx = nb::cast<int>(active_data.attr(active_prop.c_str()));
             }
         } catch (...) {
-            LOG_WARN("template_list: failed to get active index for '{}'", active_prop);
+            LOG_WARN("template_list: failed to inspect '{}'", prop_id);
         }
-
-        auto [changed, new_idx] = listbox(list_id, active_idx, items, rows);
-        if (changed) {
-            try {
-                nb::setattr(active_data, active_prop.c_str(), nb::cast(new_idx));
-            } catch (...) {
-                LOG_WARN("template_list: failed to write selection for '{}'", active_prop);
-            }
-        }
-
-        return {new_idx, static_cast<int>(items.size())};
+        return {active_idx, item_count};
     }
 
-    void PyUILayout::menu(const std::string& menu_id, const std::string& text, const std::string& /*icon*/) {
-        std::string label = text.empty() ? menu_id : text;
-        if (ImGui::BeginMenu(label.c_str())) {
-            // Menu content should be drawn by the registered Menu class
-            // This just opens a submenu with the given label
-            ImGui::TextDisabled("(Menu: %s)", menu_id.c_str());
-            ImGui::EndMenu();
-        }
-    }
+    void PyUILayout::menu(const std::string&, const std::string&, const std::string&) {}
+    void PyUILayout::popover(const std::string&, const std::string&, const std::string&) {}
 
-    void PyUILayout::popover(const std::string& panel_id, const std::string& text, const std::string& /*icon*/) {
-        std::string btn_text = text.empty() ? panel_id : text;
-        if (ImGui::Button(btn_text.c_str())) {
-            ImGui::OpenPopup(panel_id.c_str());
-        }
-
-        if (ImGui::BeginPopup(panel_id.c_str())) {
-            vis::gui::PanelDrawContext ctx;
-            ctx.scene = get_scene_for_python();
-            vis::gui::PanelRegistry::instance().draw_single_panel(panel_id, ctx);
-            ImGui::EndPopup();
-        }
-    }
-
-    // PyUILayout implementation - Drawing (for viewport overlays)
-    namespace {
-        ImU32 tuple_to_color32(const nb::object& obj) {
-            const auto c = tuple_to_imvec4(obj);
-            return IM_COL32(
-                static_cast<int>(c.x * 255),
-                static_cast<int>(c.y * 255),
-                static_cast<int>(c.z * 255),
-                static_cast<int>(c.w * 255));
-        }
-    } // namespace
-
-    void PyUILayout::draw_circle(float x, float y, float radius,
-                                 nb::object color,
-                                 int segments, float thickness) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddCircle(ImVec2(x, y), radius, tuple_to_color32(color), segments, thickness);
-    }
-
-    void PyUILayout::draw_circle_filled(float x, float y, float radius,
-                                        nb::object color,
-                                        int segments) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddCircleFilled(ImVec2(x, y), radius, tuple_to_color32(color), segments);
-    }
-
-    void PyUILayout::draw_rect(float x0, float y0, float x1, float y1,
-                               nb::object color,
-                               float thickness) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), 0.0f, 0, thickness);
-    }
-
-    void PyUILayout::draw_rect_filled(float x0, float y0, float x1, float y1,
-                                      nb::object color, bool background) {
-        auto* const dl = background ? ImGui::GetBackgroundDrawList() : ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color));
-    }
-
-    void PyUILayout::draw_rect_rounded(float x0, float y0, float x1, float y1,
-                                       nb::object color,
-                                       float rounding, float thickness, bool background) {
-        auto* const dl = background ? ImGui::GetBackgroundDrawList() : ImGui::GetWindowDrawList();
-        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), rounding, 0, thickness);
-    }
-
-    void PyUILayout::draw_rect_rounded_filled(float x0, float y0, float x1, float y1,
-                                              nb::object color,
-                                              float rounding, bool background) {
-        auto* const dl = background ? ImGui::GetBackgroundDrawList() : ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), rounding);
-    }
-
-    void PyUILayout::draw_triangle_filled(float x0, float y0, float x1, float y1, float x2, float y2,
-                                          nb::object color, bool background) {
-        auto* const dl = background ? ImGui::GetBackgroundDrawList() : ImGui::GetWindowDrawList();
-        dl->AddTriangleFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(x2, y2), tuple_to_color32(color));
-    }
-
-    void PyUILayout::draw_line(float x0, float y0, float x1, float y1,
-                               nb::object color,
-                               float thickness) {
-        auto* dl = ImGui::GetForegroundDrawList();
-        dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), thickness);
-    }
-
-    void PyUILayout::draw_polyline(const std::vector<std::tuple<float, float>>& points,
-                                   nb::object color,
-                                   bool closed, float thickness) {
-        if (points.empty())
-            return;
-        auto* dl = ImGui::GetForegroundDrawList();
-        std::vector<ImVec2> im_points;
-        im_points.reserve(points.size());
-        for (const auto& [px, py] : points) {
-            im_points.emplace_back(px, py);
-        }
-        dl->AddPolyline(im_points.data(), static_cast<int>(im_points.size()),
-                        tuple_to_color32(color), closed ? ImDrawFlags_Closed : ImDrawFlags_None, thickness);
-    }
-
-    void PyUILayout::draw_poly_filled(const std::vector<std::tuple<float, float>>& points,
-                                      nb::object color) {
-        if (points.size() < 3)
-            return;
-        auto* dl = ImGui::GetForegroundDrawList();
-        std::vector<ImVec2> im_points;
-        im_points.reserve(points.size());
-        for (const auto& [px, py] : points) {
-            im_points.emplace_back(px, py);
-        }
-        dl->AddConvexPolyFilled(im_points.data(), static_cast<int>(im_points.size()), tuple_to_color32(color));
-    }
-
-    void PyUILayout::draw_text(float x, float y, const std::string& text,
-                               nb::object color, bool background) {
-        auto* const dl = background ? ImGui::GetBackgroundDrawList() : ImGui::GetForegroundDrawList();
-        ImFont* const font = ImGui::GetFont();
-        dl->AddText(font, ImGui::GetFontSize(), ImVec2(x, y), tuple_to_color32(color), text.c_str());
-    }
-
-    void PyUILayout::draw_window_rect_filled(float x0, float y0, float x1, float y1,
-                                             nb::object color) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color));
-    }
-
-    void PyUILayout::draw_window_rect(float x0, float y0, float x1, float y1,
-                                      nb::object color, float thickness) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), 0.0f, 0, thickness);
-    }
-
-    void PyUILayout::draw_window_rect_rounded(float x0, float y0, float x1, float y1,
-                                              nb::object color,
-                                              float rounding, float thickness) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), rounding, 0, thickness);
-    }
-
-    void PyUILayout::draw_window_rect_rounded_filled(float x0, float y0, float x1, float y1,
-                                                     nb::object color,
-                                                     float rounding) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), rounding);
-    }
-
-    void PyUILayout::draw_window_line(float x0, float y0, float x1, float y1,
-                                      nb::object color, float thickness) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), tuple_to_color32(color), thickness);
-    }
-
-    void PyUILayout::draw_window_text(float x, float y, const std::string& text,
-                                      nb::object color) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        ImFont* const font = ImGui::GetFont();
-        dl->AddText(font, ImGui::GetFontSize(), ImVec2(x, y), tuple_to_color32(color), text.c_str());
-    }
-
-    void PyUILayout::draw_window_triangle_filled(float x0, float y0, float x1, float y1, float x2, float y2,
-                                                 nb::object color) {
-        auto* const dl = ImGui::GetWindowDrawList();
-        dl->AddTriangleFilled(ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(x2, y2), tuple_to_color32(color));
-    }
-
-    void PyUILayout::crf_curve_preview(const std::string& label, float gamma, float toe, float shoulder,
-                                       float gamma_r, float gamma_g, float gamma_b) {
-        vis::gui::widgets::CRFCurvePreview(label.c_str(), gamma, toe, shoulder, gamma_r, gamma_g, gamma_b);
-    }
+    void PyUILayout::draw_circle(float, float, float, nb::object, int, float) {}
+    void PyUILayout::draw_circle_filled(float, float, float, nb::object, int) {}
+    void PyUILayout::draw_rect(float, float, float, float, nb::object, float) {}
+    void PyUILayout::draw_rect_filled(float, float, float, float, nb::object, bool) {}
+    void PyUILayout::draw_rect_rounded(float, float, float, float, nb::object, float, float, bool) {}
+    void PyUILayout::draw_rect_rounded_filled(float, float, float, float, nb::object, float, bool) {}
+    void PyUILayout::draw_triangle_filled(float, float, float, float, float, float, nb::object, bool) {}
+    void PyUILayout::draw_line(float, float, float, float, nb::object, float) {}
+    void PyUILayout::draw_polyline(const std::vector<std::tuple<float, float>>&, nb::object, bool, float) {}
+    void PyUILayout::draw_poly_filled(const std::vector<std::tuple<float, float>>&, nb::object) {}
+    void PyUILayout::draw_text(float, float, const std::string&, nb::object, bool) {}
+    void PyUILayout::draw_window_rect_filled(float, float, float, float, nb::object) {}
+    void PyUILayout::draw_window_rect(float, float, float, float, nb::object, float) {}
+    void PyUILayout::draw_window_rect_rounded(float, float, float, float, nb::object, float, float) {}
+    void PyUILayout::draw_window_rect_rounded_filled(float, float, float, float, nb::object, float) {}
+    void PyUILayout::draw_window_line(float, float, float, float, nb::object, float) {}
+    void PyUILayout::draw_window_text(float, float, const std::string&, nb::object) {}
+    void PyUILayout::draw_window_triangle_filled(float, float, float, float, float, float, nb::object) {}
+    void PyUILayout::crf_curve_preview(const std::string&, float, float, float, float, float, float) {}
 
     std::tuple<bool, std::vector<float>> PyUILayout::chromaticity_diagram(
-        const std::string& label,
+        const std::string&,
         float red_x, float red_y, float green_x, float green_y,
         float blue_x, float blue_y, float neutral_x, float neutral_y,
-        float range) {
-        bool changed = vis::gui::widgets::ChromaticityDiagram(
-            label.c_str(), &red_x, &red_y, &green_x, &green_y,
-            &blue_x, &blue_y, &neutral_x, &neutral_y, range);
-        return {changed, {red_x, red_y, green_x, green_y, blue_x, blue_y, neutral_x, neutral_y}};
+        float) {
+        return {false, {red_x, red_y, green_x, green_y, blue_x, blue_y, neutral_x, neutral_y}};
     }
 
-    // PyUILayout implementation - Text
-    void PyUILayout::label(const std::string& text) {
-        ImGui::TextUnformatted(text.c_str());
-    }
+    void PyUILayout::label(const std::string&) {}
+    void PyUILayout::label_centered(const std::string&) {}
+    void PyUILayout::heading(const std::string&) {}
+    void PyUILayout::text_colored(const std::string&, nb::object) {}
+    void PyUILayout::text_colored_centered(const std::string&, nb::object) {}
+    void PyUILayout::text_selectable(const std::string&, float) {}
+    void PyUILayout::bullet_text(const std::string&) {}
+    void PyUILayout::text_wrapped(const std::string&) {}
+    void PyUILayout::text_disabled(const std::string&) {}
 
-    void PyUILayout::label_centered(const std::string& text) {
-        const float text_width = ImGui::CalcTextSize(text.c_str()).x;
-        const float avail_width = ImGui::GetContentRegionAvail().x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_width - text_width) * 0.5f);
-        ImGui::TextUnformatted(text.c_str());
-    }
-
-    void PyUILayout::heading(const std::string& text) {
-        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[1]); // Bold font
-        ImGui::TextUnformatted(text.c_str());
-        ImGui::PopFont();
-    }
-
-    void PyUILayout::text_colored(const std::string& text, nb::object color) {
-        ImGui::TextColored(tuple_to_imvec4(color), "%s", text.c_str());
-    }
-
-    void PyUILayout::text_colored_centered(const std::string& text, nb::object color) {
-        const float text_width = ImGui::CalcTextSize(text.c_str()).x;
-        const float avail_width = ImGui::GetContentRegionAvail().x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_width - text_width) * 0.5f);
-        ImGui::TextColored(tuple_to_imvec4(color), "%s", text.c_str());
-    }
-
-    void PyUILayout::text_selectable(const std::string& text, const float height) {
-        constexpr ImGuiInputTextFlags FLAGS = ImGuiInputTextFlags_ReadOnly;
-        const float h = height > 0 ? height : ImGui::GetTextLineHeight() * 3;
-        ImGui::InputTextMultiline("##selectable", const_cast<char*>(text.c_str()), text.size() + 1, ImVec2(-1, h), FLAGS);
-    }
-
-    void PyUILayout::bullet_text(const std::string& text) {
-        ImGui::BulletText("%s", text.c_str());
-    }
-
-    void PyUILayout::text_wrapped(const std::string& text) {
-        ImGui::TextWrapped("%s", text.c_str());
-    }
-
-    void PyUILayout::text_disabled(const std::string& text) {
-        ImGui::TextDisabled("%s", text.c_str());
-    }
-
-    bool PyUILayout::button(const std::string& label, std::tuple<float, float> size) {
-        return ImGui::Button(label.c_str(), {std::get<0>(size), std::get<1>(size)});
-    }
-
-    bool PyUILayout::button_callback(const std::string& label, nb::object callback,
-                                     std::tuple<float, float> size) {
-        bool clicked = ImGui::Button(label.c_str(), {std::get<0>(size), std::get<1>(size)});
-        if (clicked && !callback.is_none()) {
-            try {
-                callback();
-            } catch (const nb::python_error& e) {
-                LOG_ERROR("Button callback error: {}", e.what());
-            }
-        }
-        return clicked;
-    }
-
-    bool PyUILayout::small_button(const std::string& label) {
-        return ImGui::SmallButton(label.c_str());
-    }
-
-    std::tuple<bool, bool> PyUILayout::checkbox(const std::string& label, bool value) {
-        bool v = value;
-        bool changed = ImGui::Checkbox(label.c_str(), &v);
-        return {changed, v};
-    }
-
-    std::tuple<bool, int> PyUILayout::radio_button(const std::string& label, int current, int value) {
-        bool clicked = ImGui::RadioButton(label.c_str(), current == value);
-        return {clicked, clicked ? value : current};
-    }
-
-    // Sliders
-    std::tuple<bool, float> PyUILayout::slider_float(const std::string& label, float value, float min, float max) {
-        float v = value;
-        bool changed = lfs::vis::gui::widgets::SliderFloat(label.c_str(), &v, min, max);
-        return {changed, v};
-    }
-
-    std::tuple<bool, int> PyUILayout::slider_int(const std::string& label, int value, int min, int max) {
-        int v = value;
-        bool changed = lfs::vis::gui::widgets::SliderInt(label.c_str(), &v, min, max);
-        return {changed, v};
-    }
-
+    bool PyUILayout::button(const std::string&, std::tuple<float, float>) { return false; }
+    bool PyUILayout::button_callback(const std::string&, nb::object, std::tuple<float, float>) { return false; }
+    bool PyUILayout::small_button(const std::string&) { return false; }
+    std::tuple<bool, bool> PyUILayout::checkbox(const std::string&, bool value) { return {false, value}; }
+    std::tuple<bool, int> PyUILayout::radio_button(const std::string&, int current, int) { return {false, current}; }
+    std::tuple<bool, float> PyUILayout::slider_float(const std::string&, float value, float, float) { return {false, value}; }
+    std::tuple<bool, int> PyUILayout::slider_int(const std::string&, int value, int, int) { return {false, value}; }
     std::tuple<bool, std::tuple<float, float>> PyUILayout::slider_float2(
-        const std::string& label, std::tuple<float, float> value, float min, float max) {
-        float v[2] = {std::get<0>(value), std::get<1>(value)};
-        bool changed = lfs::vis::gui::widgets::SliderFloat2(label.c_str(), v, min, max);
-        return {changed, {v[0], v[1]}};
-    }
-
+        const std::string&, std::tuple<float, float> value, float, float) { return {false, value}; }
     std::tuple<bool, std::tuple<float, float, float>> PyUILayout::slider_float3(
-        const std::string& label, std::tuple<float, float, float> value, float min, float max) {
-        float v[3] = {std::get<0>(value), std::get<1>(value), std::get<2>(value)};
-        bool changed = lfs::vis::gui::widgets::SliderFloat3(label.c_str(), v, min, max);
-        return {changed, {v[0], v[1], v[2]}};
+        const std::string&, std::tuple<float, float, float> value, float, float) { return {false, value}; }
+    std::tuple<bool, float> PyUILayout::drag_float(const std::string&, float value, float, float, float) { return {false, value}; }
+    std::tuple<bool, int> PyUILayout::drag_int(const std::string&, int value, float, int, int) { return {false, value}; }
+    std::tuple<bool, std::string> PyUILayout::input_text(const std::string&, const std::string& value) { return {false, value}; }
+    std::tuple<bool, std::string> PyUILayout::input_text_with_hint(const std::string&, const std::string&, const std::string& value) {
+        return {false, value};
     }
-
-    // Drags
-    std::tuple<bool, float> PyUILayout::drag_float(const std::string& label, float value,
-                                                   float speed, float min, float max) {
-        float v = value;
-        bool changed = vis::gui::widgets::DragFloat(label.c_str(), &v, speed, min, max);
-        return {changed, v};
+    std::tuple<bool, float> PyUILayout::input_float(const std::string&, float value, float, float, const std::string&) {
+        return {false, value};
     }
-
-    std::tuple<bool, int> PyUILayout::drag_int(const std::string& label, int value,
-                                               float speed, int min, int max) {
-        int v = value;
-        bool changed = vis::gui::widgets::DragInt(label.c_str(), &v, speed, min, max);
-        return {changed, v};
+    std::tuple<bool, int> PyUILayout::input_int(const std::string&, int value, int, int) { return {false, value}; }
+    std::tuple<bool, int> PyUILayout::input_int_formatted(const std::string&, int value, int, int) { return {false, value}; }
+    std::tuple<bool, float> PyUILayout::stepper_float(const std::string&, float value, const std::vector<float>&) {
+        return {false, value};
     }
-
-    // Input
-    std::tuple<bool, std::string> PyUILayout::input_text(const std::string& label, const std::string& value) {
-        char buffer[INPUT_TEXT_BUFFER_SIZE];
-        std::strncpy(buffer, value.c_str(), sizeof(buffer) - 1);
-        buffer[sizeof(buffer) - 1] = '\0';
-        bool changed = vis::gui::widgets::InputText(label.c_str(), buffer, sizeof(buffer));
-        return {changed, std::string(buffer)};
+    std::tuple<bool, std::string> PyUILayout::path_input(const std::string&, const std::string& value, bool, const std::string&) {
+        return {false, value};
     }
-
-    std::tuple<bool, std::string> PyUILayout::input_text_with_hint(const std::string& label, const std::string& hint,
-                                                                   const std::string& value) {
-        char buffer[INPUT_TEXT_BUFFER_SIZE];
-        std::strncpy(buffer, value.c_str(), sizeof(buffer) - 1);
-        buffer[sizeof(buffer) - 1] = '\0';
-        bool changed = vis::gui::widgets::InputTextWithHint(label.c_str(), hint.c_str(), buffer, sizeof(buffer));
-        return {changed, std::string(buffer)};
-    }
-
-    std::tuple<bool, float> PyUILayout::input_float(const std::string& label, float value, float step, float step_fast,
-                                                    const std::string& format) {
-        float v = value;
-        const bool changed = vis::gui::widgets::InputFloat(label.c_str(), &v, step, step_fast, format.c_str());
-        return {changed, v};
-    }
-
-    std::tuple<bool, int> PyUILayout::input_int(const std::string& label, int value, int step, int step_fast) {
-        int v = value;
-        const bool changed = vis::gui::widgets::InputInt(label.c_str(), &v, step, step_fast);
-        return {changed, v};
-    }
-
-    std::tuple<bool, int> PyUILayout::input_int_formatted(const std::string& label, int value, int step, int step_fast) {
-        int v = value;
-        const bool changed = vis::gui::widgets::InputIntFormatted(label.c_str(), &v, step, step_fast);
-        return {changed, v};
-    }
-
-    std::tuple<bool, float> PyUILayout::stepper_float(const std::string& label, float value,
-                                                      const std::vector<float>& steps) {
-        float v = value;
-        bool changed = false;
-
-        ImGui::PushID(label.c_str());
-
-        const float avail = ImGui::GetContentRegionAvail().x;
-        const float btn_height = ImGui::GetFrameHeight();
-        const float spacing = ImGui::GetStyle().ItemSpacing.x;
-
-        float buttons_total = 0.0f;
-        for (size_t i = 0; i < steps.size(); ++i) {
-            char minus_buf[32], plus_buf[32];
-            std::snprintf(minus_buf, sizeof(minus_buf), "-%.6g", steps[i]);
-            std::snprintf(plus_buf, sizeof(plus_buf), "+%.6g", steps[i]);
-            buttons_total += ImGui::CalcTextSize(minus_buf).x + ImGui::GetStyle().FramePadding.x * 2;
-            buttons_total += ImGui::CalcTextSize(plus_buf).x + ImGui::GetStyle().FramePadding.x * 2;
-            buttons_total += spacing * 2;
-        }
-
-        const float input_width = std::max(avail - buttons_total - spacing, 60.0f);
-        ImGui::SetNextItemWidth(input_width);
-        if (vis::gui::widgets::InputFloat("##val", &v, 0.0f, 0.0f, "%.3f")) {
-            changed = true;
-        }
-
-        for (size_t i = 0; i < steps.size(); ++i) {
-            const float step = steps[i];
-            char buf[32];
-
-            ImGui::SameLine();
-            std::snprintf(buf, sizeof(buf), "-%.6g", step);
-            ImGui::PushID(static_cast<int>(i * 2));
-            if (ImGui::Button(buf, ImVec2(0, btn_height))) {
-                v -= step;
-                changed = true;
-            }
-            ImGui::PopID();
-
-            ImGui::SameLine();
-            std::snprintf(buf, sizeof(buf), "+%.6g", step);
-            ImGui::PushID(static_cast<int>(i * 2 + 1));
-            if (ImGui::Button(buf, ImVec2(0, btn_height))) {
-                v += step;
-                changed = true;
-            }
-            ImGui::PopID();
-        }
-
-        if (!label.empty() && label[0] != '#') {
-            ImGui::SameLine();
-            ImGui::TextUnformatted(label.c_str());
-        }
-
-        ImGui::PopID();
-        return {changed, v};
-    }
-
-    std::tuple<bool, std::string> PyUILayout::path_input(const std::string& label, const std::string& value,
-                                                         const bool folder_mode,
-                                                         const std::string& /*dialog_title*/) {
-        // `dialog_title` is accepted for Python API compatibility; native dialogs currently ignore it.
-        char buffer[INPUT_TEXT_BUFFER_SIZE];
-        std::strncpy(buffer, value.c_str(), sizeof(buffer) - 1);
-        buffer[sizeof(buffer) - 1] = '\0';
-
-        const float available = ImGui::GetContentRegionAvail().x;
-        const float button_width = ImGui::CalcTextSize("...").x + ImGui::GetStyle().FramePadding.x * 2;
-        const float input_width = available - button_width - ImGui::GetStyle().ItemSpacing.x;
-
-        ImGui::SetNextItemWidth(input_width);
-        bool changed = vis::gui::widgets::InputText(label.c_str(), buffer, sizeof(buffer));
-
-        ImGui::SameLine();
-        const std::string btn_id = "...##" + label + "_browse";
-        if (ImGui::Button(btn_id.c_str())) {
-            const std::filesystem::path start_path =
-                value.empty() ? std::filesystem::path{} : lfs::core::utf8_to_path(value);
-            std::filesystem::path result;
-            if (folder_mode) {
-                result = lfs::vis::gui::PickFolderDialog(start_path);
-            } else {
-                result = lfs::vis::gui::OpenImageFileDialog(start_path);
-            }
-            if (!result.empty()) {
-                const std::string result_utf8 = lfs::core::path_to_utf8(result);
-                std::strncpy(buffer, result_utf8.c_str(), sizeof(buffer) - 1);
-                buffer[sizeof(buffer) - 1] = '\0';
-                changed = true;
-            }
-        }
-
-        return {changed, std::string(buffer)};
-    }
-
-    // Color
     std::tuple<bool, std::tuple<float, float, float>> PyUILayout::color_edit3(
-        const std::string& label, std::tuple<float, float, float> color) {
-        float c[3] = {std::get<0>(color), std::get<1>(color), std::get<2>(color)};
-        bool changed = ImGui::ColorEdit3(label.c_str(), c);
-        return {changed, {c[0], c[1], c[2]}};
-    }
-
+        const std::string&, std::tuple<float, float, float> color) { return {false, color}; }
     std::tuple<bool, std::tuple<float, float, float, float>> PyUILayout::color_edit4(
-        const std::string& label, std::tuple<float, float, float, float> color) {
-        float c[4] = {std::get<0>(color), std::get<1>(color), std::get<2>(color), std::get<3>(color)};
-        bool changed = ImGui::ColorEdit4(label.c_str(), c);
-        return {changed, {c[0], c[1], c[2], c[3]}};
-    }
-
+        const std::string&, std::tuple<float, float, float, float> color) { return {false, color}; }
     std::tuple<bool, std::tuple<float, float, float>> PyUILayout::color_picker3(
-        const std::string& label, std::tuple<float, float, float> color) {
-        float c[3] = {std::get<0>(color), std::get<1>(color), std::get<2>(color)};
-        bool changed = ImGui::ColorPicker3(label.c_str(), c,
-                                           ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_DisplayHSV | ImGuiColorEditFlags_DisplayHex |
-                                               ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_PickerHueBar);
-        return {changed, {c[0], c[1], c[2]}};
+        const std::string&, std::tuple<float, float, float> color) { return {false, color}; }
+    bool PyUILayout::color_button(const std::string&, nb::object, std::tuple<float, float>) { return false; }
+    std::tuple<bool, int> PyUILayout::combo(const std::string&, int current_idx, const std::vector<std::string>&) {
+        return {false, current_idx};
+    }
+    std::tuple<bool, int> PyUILayout::listbox(const std::string&, int current_idx, const std::vector<std::string>&, int) {
+        return {false, current_idx};
     }
 
-    bool PyUILayout::color_button(const std::string& label, nb::object color,
-                                  std::tuple<float, float> size) {
-        return ImGui::ColorButton(label.c_str(), tuple_to_imvec4(color), 0,
-                                  {std::get<0>(size), std::get<1>(size)});
-    }
-
-    // Selection
-    std::tuple<bool, int> PyUILayout::combo(const std::string& label, int current_idx,
-                                            const std::vector<std::string>& items) {
-        int idx = current_idx;
-        bool changed = false;
-        if (ImGui::BeginCombo(label.c_str(), (idx >= 0 && idx < static_cast<int>(items.size()))
-                                                 ? items[idx].c_str()
-                                                 : "")) {
-            for (int i = 0; i < static_cast<int>(items.size()); ++i) {
-                bool selected = (i == idx);
-                if (ImGui::Selectable(items[i].c_str(), selected)) {
-                    idx = i;
-                    changed = true;
-                }
-                if (selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            ImGui::EndCombo();
-        }
-        return {changed, idx};
-    }
-
-    std::tuple<bool, int> PyUILayout::listbox(const std::string& label, int current_idx,
-                                              const std::vector<std::string>& items, int height_items) {
-        int idx = current_idx;
-        bool changed = false;
-        if (ImGui::BeginListBox(label.c_str(), {0, height_items > 0 ? height_items * ImGui::GetTextLineHeightWithSpacing() : 0})) {
-            for (int i = 0; i < static_cast<int>(items.size()); ++i) {
-                bool selected = (i == idx);
-                if (ImGui::Selectable(items[i].c_str(), selected)) {
-                    idx = i;
-                    changed = true;
-                }
-                if (selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            ImGui::EndListBox();
-        }
-        return {changed, idx};
-    }
-
-    // Layout
     void PyUILayout::separator() {
         if (collecting_ && collect_target_) {
             vis::gui::MenuItemDesc item;
             item.type = vis::gui::MenuItemDesc::Type::Separator;
             collect_target_->items.push_back(std::move(item));
-            return;
         }
-        ImGui::Separator();
     }
-
-    void PyUILayout::spacing() {
-        ImGui::Spacing();
-    }
-
-    void PyUILayout::same_line(float offset, float spacing) {
-        ImGui::SameLine(offset, spacing);
-    }
-
-    void PyUILayout::new_line() {
-        ImGui::NewLine();
-    }
-
-    void PyUILayout::indent(float width) {
-        ImGui::Indent(width);
-    }
-
-    void PyUILayout::unindent(float width) {
-        ImGui::Unindent(width);
-    }
-
-    void PyUILayout::set_next_item_width(float width) {
-        ImGui::SetNextItemWidth(width);
-    }
-
-    // Grouping
-    void PyUILayout::begin_group() {
-        ImGui::BeginGroup();
-    }
-
-    void PyUILayout::end_group() {
-        ImGui::EndGroup();
-    }
-
-    bool PyUILayout::collapsing_header(const std::string& label, bool default_open) {
-        return ImGui::CollapsingHeader(label.c_str(), default_open ? ImGuiTreeNodeFlags_DefaultOpen : 0);
-    }
-
-    bool PyUILayout::tree_node(const std::string& label) {
-        return ImGui::TreeNode(label.c_str());
-    }
-
-    bool PyUILayout::tree_node_ex(const std::string& label, const std::string& flags_str) {
-        ImGuiTreeNodeFlags flags = 0;
-        if (flags_str.find("DefaultOpen") != std::string::npos)
-            flags |= ImGuiTreeNodeFlags_DefaultOpen;
-        if (flags_str.find("OpenOnArrow") != std::string::npos)
-            flags |= ImGuiTreeNodeFlags_OpenOnArrow;
-        if (flags_str.find("SpanAvailWidth") != std::string::npos)
-            flags |= ImGuiTreeNodeFlags_SpanAvailWidth;
-        if (flags_str.find("Leaf") != std::string::npos)
-            flags |= ImGuiTreeNodeFlags_Leaf;
-        if (flags_str.find("NoTreePushOnOpen") != std::string::npos)
-            flags |= ImGuiTreeNodeFlags_NoTreePushOnOpen;
-        if (flags_str.find("Selected") != std::string::npos)
-            flags |= ImGuiTreeNodeFlags_Selected;
-        return ImGui::TreeNodeEx(label.c_str(), flags);
-    }
-
-    void PyUILayout::set_next_item_open(bool is_open) {
-        ImGui::SetNextItemOpen(is_open);
-    }
-
-    void PyUILayout::tree_pop() {
-        ImGui::TreePop();
-    }
-
-    // Tables
-    bool PyUILayout::begin_table(const std::string& id, int columns) {
-        return ImGui::BeginTable(id.c_str(), columns);
-    }
-
-    void PyUILayout::end_table() {
-        ImGui::EndTable();
-    }
-
-    void PyUILayout::table_next_row() {
-        ImGui::TableNextRow();
-    }
-
-    void PyUILayout::table_next_column() {
-        ImGui::TableNextColumn();
-    }
-
-    bool PyUILayout::table_set_column_index(int column) {
-        return ImGui::TableSetColumnIndex(column);
-    }
-
-    void PyUILayout::table_headers_row() {
-        ImGui::TableHeadersRow();
-    }
-
-    void PyUILayout::table_set_bg_color(int target, nb::object color) {
-        ImGui::TableSetBgColor(static_cast<ImGuiTableBgTarget>(target),
-                               ImGui::ColorConvertFloat4ToU32(tuple_to_imvec4(color)));
-    }
-
-    void PyUILayout::table_setup_column(const std::string& label, const float width) {
-        const ImGuiTableColumnFlags flags = (width > 0) ? ImGuiTableColumnFlags_WidthFixed : ImGuiTableColumnFlags_WidthStretch;
-        ImGui::TableSetupColumn(label.c_str(), flags, width);
-    }
-
-    bool PyUILayout::button_styled(const std::string& label, const std::string& style,
-                                   std::tuple<float, float> size) {
-        using lfs::vis::gui::widgets::ButtonStyle;
-        using lfs::vis::gui::widgets::ColoredButton;
-
-        static const std::unordered_map<std::string_view, ButtonStyle> STYLE_MAP = {
-            {"primary", ButtonStyle::Primary},
-            {"success", ButtonStyle::Success},
-            {"warning", ButtonStyle::Warning},
-            {"error", ButtonStyle::Error},
-            {"secondary", ButtonStyle::Secondary},
-        };
-
-        const auto it = STYLE_MAP.find(style);
-        const ButtonStyle btn_style = (it != STYLE_MAP.end()) ? it->second : ButtonStyle::Secondary;
-        return ColoredButton(label.c_str(), btn_style, {std::get<0>(size), std::get<1>(size)});
-    }
-
-    void PyUILayout::push_item_width(const float width) { ImGui::PushItemWidth(width); }
-    void PyUILayout::pop_item_width() { ImGui::PopItemWidth(); }
-
-    // Plots
-    void PyUILayout::plot_lines(const std::string& label, const std::vector<float>& values,
-                                float scale_min, float scale_max, std::tuple<float, float> size) {
-        if (values.empty())
-            return;
-        ImGui::PlotLines(label.c_str(), values.data(), static_cast<int>(values.size()),
-                         0, nullptr, scale_min, scale_max,
-                         ImVec2(std::get<0>(size), std::get<1>(size)));
-    }
-
-    // Selectable
-    bool PyUILayout::selectable(const std::string& label, bool selected, float height) {
-        ImGuiSelectableFlags flags = ImGuiSelectableFlags_SpanAllColumns;
-        ImVec2 size = {0, height};
-        return ImGui::Selectable(label.c_str(), selected, flags, size);
-    }
-
-    bool PyUILayout::begin_context_menu(const std::string& id) {
-        const auto& t = lfs::vis::theme();
-        t.pushContextMenuStyle();
-        const char* str_id = id.empty() ? nullptr : id.c_str();
-        if (!ImGui::BeginPopupContextItem(str_id)) {
-            lfs::vis::Theme::popContextMenuStyle();
-            return false;
-        }
-        return true;
-    }
-
-    void PyUILayout::end_context_menu() {
-        ImGui::EndPopup();
-        lfs::vis::Theme::popContextMenuStyle();
-    }
-
-    bool PyUILayout::begin_popup(const std::string& id) {
-        return ImGui::BeginPopup(id.c_str());
-    }
-
-    void PyUILayout::open_popup(const std::string& id) {
-        ImGui::OpenPopup(id.c_str());
-    }
-
-    void PyUILayout::end_popup() {
-        ImGui::EndPopup();
-    }
+    void PyUILayout::spacing() {}
+    void PyUILayout::same_line(float, float) {}
+    void PyUILayout::new_line() {}
+    void PyUILayout::indent(float) {}
+    void PyUILayout::unindent(float) {}
+    void PyUILayout::set_next_item_width(float) {}
+    void PyUILayout::begin_group() {}
+    void PyUILayout::end_group() {}
+    bool PyUILayout::collapsing_header(const std::string&, bool) { return true; }
+    bool PyUILayout::tree_node(const std::string&) { return true; }
+    bool PyUILayout::tree_node_ex(const std::string&, const std::string&) { return true; }
+    void PyUILayout::set_next_item_open(bool) {}
+    void PyUILayout::tree_pop() {}
+    bool PyUILayout::begin_table(const std::string&, int) { return true; }
+    void PyUILayout::end_table() {}
+    void PyUILayout::table_next_row() {}
+    void PyUILayout::table_next_column() {}
+    bool PyUILayout::table_set_column_index(int) { return true; }
+    void PyUILayout::table_headers_row() {}
+    void PyUILayout::table_set_bg_color(int, nb::object) {}
+    void PyUILayout::table_setup_column(const std::string&, float) {}
+    bool PyUILayout::button_styled(const std::string&, const std::string&, std::tuple<float, float>) { return false; }
+    void PyUILayout::push_item_width(float) {}
+    void PyUILayout::pop_item_width() {}
+    void PyUILayout::plot_lines(const std::string&, const std::vector<float>&, float, float, std::tuple<float, float>) {}
+    bool PyUILayout::selectable(const std::string&, bool, float) { return false; }
+    bool PyUILayout::begin_context_menu(const std::string&) { return false; }
+    void PyUILayout::end_context_menu() {}
+    bool PyUILayout::begin_popup(const std::string&) { return false; }
+    void PyUILayout::open_popup(const std::string&) {}
+    void PyUILayout::end_popup() {}
 
     bool PyUILayout::menu_item(const std::string& label, bool enabled, bool selected) {
         if (collecting_ && collect_target_) {
@@ -2534,7 +1848,7 @@ namespace lfs::python {
             collect_target_->items.push_back(std::move(item));
             return execute_at_index_ == idx;
         }
-        return ImGui::MenuItem(label.c_str(), nullptr, selected, enabled);
+        return false;
     }
 
     bool PyUILayout::begin_menu(const std::string& label) {
@@ -2546,295 +1860,81 @@ namespace lfs::python {
             ++menu_depth_;
             return true;
         }
-        if (ImGui::BeginMenu(label.c_str())) {
-            ++menu_depth_;
-            return true;
-        }
         return false;
     }
 
     void PyUILayout::end_menu() {
-        assert(menu_depth_ > 0);
-        --menu_depth_;
+        if (menu_depth_ > 0) {
+            --menu_depth_;
+        }
         if (collecting_ && collect_target_) {
             vis::gui::MenuItemDesc item;
             item.type = vis::gui::MenuItemDesc::Type::SubMenuEnd;
             collect_target_->items.push_back(std::move(item));
-            return;
         }
-        ImGui::EndMenu();
     }
 
-    std::tuple<bool, std::string> PyUILayout::input_text_enter(const std::string& label, const std::string& value) {
-        char buffer[256];
-        std::strncpy(buffer, value.c_str(), sizeof(buffer) - 1);
-        buffer[sizeof(buffer) - 1] = '\0';
-        const bool entered = vis::gui::widgets::InputText(
-            label.c_str(), buffer, sizeof(buffer),
-            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-        return {entered, std::string(buffer)};
-    }
-
-    void PyUILayout::set_keyboard_focus_here() {
-        ImGui::SetKeyboardFocusHere();
-    }
-
-    bool PyUILayout::is_window_focused() const {
-        return ImGui::IsWindowFocused();
-    }
-
-    bool PyUILayout::is_window_hovered() const {
-        return ImGui::IsWindowHovered();
-    }
-
-    void PyUILayout::capture_keyboard_from_app(bool capture) {
-        ImGui::GetIO().WantCaptureKeyboard = capture;
-        vis::gui::guiFocusState().want_capture_keyboard = capture;
-    }
-
-    void PyUILayout::capture_mouse_from_app(bool capture) {
-        ImGui::GetIO().WantCaptureMouse = capture;
-        vis::gui::guiFocusState().want_capture_mouse = capture;
-    }
-
-    void PyUILayout::set_scroll_here_y(float center_y_ratio) {
-        ImGui::SetScrollHereY(center_y_ratio);
-    }
-
-    std::tuple<float, float> PyUILayout::get_cursor_screen_pos() const {
-        const ImVec2 pos = ImGui::GetCursorScreenPos();
-        return {pos.x, pos.y};
-    }
-
+    std::tuple<bool, std::string> PyUILayout::input_text_enter(const std::string&, const std::string& value) { return {false, value}; }
+    void PyUILayout::set_keyboard_focus_here() {}
+    bool PyUILayout::is_window_focused() const { return false; }
+    bool PyUILayout::is_window_hovered() const { return false; }
+    void PyUILayout::capture_keyboard_from_app(bool capture) { vis::gui::guiFocusState().want_capture_keyboard = capture; }
+    void PyUILayout::capture_mouse_from_app(bool capture) { vis::gui::guiFocusState().want_capture_mouse = capture; }
+    void PyUILayout::set_scroll_here_y(float) {}
+    std::tuple<float, float> PyUILayout::get_cursor_screen_pos() const { return {0.0f, 0.0f}; }
     std::tuple<float, float> PyUILayout::get_mouse_pos() const {
-        const ImVec2 pos = ImGui::GetIO().MousePos;
-        return {pos.x, pos.y};
+        float x = 0.0f;
+        float y = 0.0f;
+        SDL_GetMouseState(&x, &y);
+        return {x, y};
     }
-
-    std::tuple<float, float> PyUILayout::get_window_pos() const {
-        const ImVec2 pos = ImGui::GetWindowPos();
-        return {pos.x, pos.y};
-    }
-
-    float PyUILayout::get_window_width() const {
-        return ImGui::GetWindowWidth();
-    }
-
-    float PyUILayout::get_text_line_height() const {
-        return ImGui::GetTextLineHeight();
-    }
-
-    bool PyUILayout::begin_popup_modal(const std::string& title) {
-        constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
-                                           ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings;
-        return ImGui::BeginPopupModal(title.c_str(), nullptr, flags);
-    }
-
-    void PyUILayout::end_popup_modal() {
-        ImGui::EndPopup();
-    }
-
-    void PyUILayout::close_current_popup() {
-        ImGui::CloseCurrentPopup();
-    }
-
-    void PyUILayout::set_next_window_pos_center() {
-        const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
-    }
-
-    void PyUILayout::set_next_window_pos_viewport_center(const bool always) {
-        const auto [vp_x, vp_y] = get_viewport_pos();
-        const auto [vp_w, vp_h] = get_viewport_size();
-        const ImVec2 center{vp_x + vp_w * 0.5f, vp_y + vp_h * 0.5f};
-        ImGui::SetNextWindowPos(center, always ? ImGuiCond_Always : ImGuiCond_Appearing, {0.5f, 0.5f});
-    }
-
-    void PyUILayout::set_next_window_focus() {
-        ImGui::SetNextWindowFocus();
-    }
-
-    void PyUILayout::push_modal_style() {
-        lfs::vis::theme().pushModalStyle();
-    }
-
-    void PyUILayout::pop_modal_style() {
-        lfs::vis::theme().popModalStyle();
-    }
-
-    std::tuple<float, float> PyUILayout::get_content_region_avail() {
-        const ImVec2 avail = ImGui::GetContentRegionAvail();
-        return {avail.x, avail.y};
-    }
-
-    std::tuple<float, float> PyUILayout::get_cursor_pos() {
-        const ImVec2 pos = ImGui::GetCursorPos();
-        return {pos.x, pos.y};
-    }
-
-    void PyUILayout::set_cursor_pos_x(float x) {
-        ImGui::SetCursorPosX(x);
-    }
-
+    std::tuple<float, float> PyUILayout::get_window_pos() const { return {0.0f, 0.0f}; }
+    float PyUILayout::get_window_width() const { return 0.0f; }
+    float PyUILayout::get_text_line_height() const { return 16.0f * python::get_shared_dpi_scale(); }
+    bool PyUILayout::begin_popup_modal(const std::string&) { return false; }
+    void PyUILayout::end_popup_modal() {}
+    void PyUILayout::close_current_popup() {}
+    void PyUILayout::set_next_window_pos_center() {}
+    void PyUILayout::set_next_window_pos_viewport_center(bool) {}
+    void PyUILayout::set_next_window_focus() {}
+    void PyUILayout::push_modal_style() { lfs::vis::theme().pushModalStyle(); }
+    void PyUILayout::pop_modal_style() { lfs::vis::theme().popModalStyle(); }
+    std::tuple<float, float> PyUILayout::get_content_region_avail() { return get_viewport_size(); }
+    std::tuple<float, float> PyUILayout::get_cursor_pos() { return {0.0f, 0.0f}; }
+    void PyUILayout::set_cursor_pos_x(float) {}
     std::tuple<float, float> PyUILayout::calc_text_size(const std::string& text) {
-        const ImVec2 size = ImGui::CalcTextSize(text.c_str());
-        return {size.x, size.y};
+        const float scale = python::get_shared_dpi_scale();
+        return {static_cast<float>(text.size()) * 7.0f * scale, 16.0f * scale};
     }
-
-    void PyUILayout::begin_disabled(bool disabled) {
-        ImGui::BeginDisabled(disabled);
+    void PyUILayout::begin_disabled(bool) {}
+    void PyUILayout::end_disabled() {}
+    void PyUILayout::image(uint64_t, std::tuple<float, float>, nb::object) {}
+    void PyUILayout::image_uv(uint64_t, std::tuple<float, float>, std::tuple<float, float>, std::tuple<float, float>, nb::object) {}
+    bool PyUILayout::image_button(const std::string&, uint64_t, std::tuple<float, float>, nb::object) { return false; }
+    bool PyUILayout::toolbar_button(const std::string&, uint64_t, std::tuple<float, float>, bool, bool, const std::string&) {
+        return false;
     }
-
-    void PyUILayout::end_disabled() {
-        ImGui::EndDisabled();
-    }
-
-    // Images
-    void PyUILayout::image(uint64_t texture_id, std::tuple<float, float> size,
-                           nb::object tint) {
-        const ImVec4 t = tint.is_none() ? ImVec4(1, 1, 1, 1) : tuple_to_imvec4(tint);
-        ImGui::Image(static_cast<ImTextureID>(texture_id),
-                     {std::get<0>(size), std::get<1>(size)},
-                     {0, 0}, {1, 1},
-                     t, {0, 0, 0, 0});
-    }
-
-    void PyUILayout::image_uv(uint64_t texture_id, std::tuple<float, float> size,
-                              std::tuple<float, float> uv0, std::tuple<float, float> uv1,
-                              nb::object tint) {
-        const ImVec4 t = tint.is_none() ? ImVec4(1, 1, 1, 1) : tuple_to_imvec4(tint);
-        ImGui::Image(static_cast<ImTextureID>(texture_id),
-                     {std::get<0>(size), std::get<1>(size)},
-                     {std::get<0>(uv0), std::get<1>(uv0)},
-                     {std::get<0>(uv1), std::get<1>(uv1)},
-                     t, {0, 0, 0, 0});
-    }
-
-    bool PyUILayout::image_button(const std::string& id, uint64_t texture_id, std::tuple<float, float> size,
-                                  nb::object tint) {
-        const ImVec4 t = tint.is_none() ? ImVec4(1, 1, 1, 1) : tuple_to_imvec4(tint);
-        return ImGui::ImageButton(id.c_str(), static_cast<ImTextureID>(texture_id),
-                                  {std::get<0>(size), std::get<1>(size)},
-                                  {0, 0}, {1, 1},
-                                  {0, 0, 0, 0}, t);
-    }
-
-    bool PyUILayout::toolbar_button(const std::string& id, uint64_t texture_id, std::tuple<float, float> size,
-                                    bool selected, bool disabled, const std::string& tooltip) {
-        const auto btn_size = ImVec2{std::get<0>(size), std::get<1>(size)};
-
-        if (disabled) {
-            ImGui::BeginDisabled();
-        }
-
-        const bool clicked = lfs::vis::gui::widgets::IconButton(
-            id.c_str(), static_cast<ImTextureID>(texture_id), btn_size, selected, id.c_str());
-
-        if (disabled) {
-            ImGui::EndDisabled();
-        }
-
-        if (!tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            lfs::vis::gui::widgets::SetThemedTooltip(tooltip.c_str());
-        }
-
-        return clicked;
-    }
-
-    // Drag-drop
-    bool PyUILayout::begin_drag_drop_source() {
-        return ImGui::BeginDragDropSource(ImGuiDragDropFlags_None);
-    }
-
-    void PyUILayout::set_drag_drop_payload(const std::string& type, const std::string& data) {
-        ImGui::SetDragDropPayload(type.c_str(), data.data(), data.size());
-    }
-
-    void PyUILayout::end_drag_drop_source() {
-        ImGui::EndDragDropSource();
-    }
-
-    bool PyUILayout::begin_drag_drop_target() {
-        return ImGui::BeginDragDropTarget();
-    }
-
-    std::optional<std::string> PyUILayout::accept_drag_drop_payload(const std::string& type) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type.c_str())) {
-            return std::string(static_cast<const char*>(payload->Data), payload->DataSize);
-        }
-        return std::nullopt;
-    }
-
-    void PyUILayout::end_drag_drop_target() {
-        ImGui::EndDragDropTarget();
-    }
-
-    // Misc
-    void PyUILayout::progress_bar(float fraction, const std::string& overlay, float width,
-                                  float height) {
-        const float w = (width > 0) ? width : -FLT_MIN;
-        const float h = (height > 0) ? height : 0;
-        ImGui::ProgressBar(fraction, {w, h}, overlay.empty() ? nullptr : overlay.c_str());
-    }
-
-    void PyUILayout::set_tooltip(const std::string& text) {
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", text.c_str());
-        }
-    }
-
-    bool PyUILayout::is_item_hovered() {
-        return ImGui::IsItemHovered();
-    }
-
-    bool PyUILayout::is_item_clicked(int button) {
-        return ImGui::IsItemClicked(button);
-    }
-
-    bool PyUILayout::is_mouse_double_clicked(int button) {
-        return ImGui::IsMouseDoubleClicked(button);
-    }
-
-    bool PyUILayout::is_mouse_dragging(int button) {
-        return ImGui::IsMouseDragging(button);
-    }
-
-    float PyUILayout::get_mouse_wheel() {
-        return ImGui::GetIO().MouseWheel;
-    }
-
-    std::tuple<float, float> PyUILayout::get_mouse_delta() {
-        const auto& delta = ImGui::GetIO().MouseDelta;
-        return {delta.x, delta.y};
-    }
-
-    bool PyUILayout::invisible_button(const std::string& id, std::tuple<float, float> size) {
-        return ImGui::InvisibleButton(id.c_str(), {std::get<0>(size), std::get<1>(size)});
-    }
-
-    bool PyUILayout::is_item_active() {
-        return ImGui::IsItemActive();
-    }
-
-    void PyUILayout::set_cursor_pos(std::tuple<float, float> pos) {
-        ImGui::SetCursorPos({std::get<0>(pos), std::get<1>(pos)});
-    }
-
-    bool PyUILayout::begin_child(const std::string& id, std::tuple<float, float> size, bool border) {
-        return ImGui::BeginChild(id.c_str(), {std::get<0>(size), std::get<1>(size)}, border ? ImGuiChildFlags_Borders : ImGuiChildFlags_None);
-    }
-
-    void PyUILayout::end_child() {
-        ImGui::EndChild();
-    }
-
-    bool PyUILayout::begin_menu_bar() {
-        return ImGui::BeginMenuBar();
-    }
-
-    void PyUILayout::end_menu_bar() {
-        ImGui::EndMenuBar();
-    }
+    bool PyUILayout::begin_drag_drop_source() { return false; }
+    void PyUILayout::set_drag_drop_payload(const std::string&, const std::string&) {}
+    void PyUILayout::end_drag_drop_source() {}
+    bool PyUILayout::begin_drag_drop_target() { return false; }
+    std::optional<std::string> PyUILayout::accept_drag_drop_payload(const std::string&) { return std::nullopt; }
+    void PyUILayout::end_drag_drop_target() {}
+    void PyUILayout::progress_bar(float, const std::string&, float, float) {}
+    void PyUILayout::set_tooltip(const std::string&) {}
+    bool PyUILayout::is_item_hovered() { return false; }
+    bool PyUILayout::is_item_clicked(int) { return false; }
+    bool PyUILayout::is_mouse_double_clicked(int) { return false; }
+    bool PyUILayout::is_mouse_dragging(int) { return false; }
+    float PyUILayout::get_mouse_wheel() { return 0.0f; }
+    std::tuple<float, float> PyUILayout::get_mouse_delta() { return {0.0f, 0.0f}; }
+    bool PyUILayout::invisible_button(const std::string&, std::tuple<float, float>) { return false; }
+    bool PyUILayout::is_item_active() { return false; }
+    void PyUILayout::set_cursor_pos(std::tuple<float, float>) {}
+    bool PyUILayout::begin_child(const std::string&, std::tuple<float, float>, bool) { return true; }
+    void PyUILayout::end_child() {}
+    bool PyUILayout::begin_menu_bar() { return true; }
+    void PyUILayout::end_menu_bar() {}
 
     bool PyUILayout::menu_item_toggle(const std::string& label, const std::string& shortcut, bool selected) {
         if (collecting_ && collect_target_) {
@@ -2848,7 +1948,7 @@ namespace lfs::python {
             collect_target_->items.push_back(std::move(item));
             return execute_at_index_ == idx;
         }
-        return ImGui::MenuItem(label.c_str(), shortcut.c_str(), selected);
+        return false;
     }
 
     bool PyUILayout::menu_item_shortcut(const std::string& label, const std::string& shortcut, bool enabled) {
@@ -2863,68 +1963,21 @@ namespace lfs::python {
             collect_target_->items.push_back(std::move(item));
             return execute_at_index_ == idx;
         }
-        return ImGui::MenuItem(label.c_str(), shortcut.c_str(), false, enabled);
+        return false;
     }
 
-    void PyUILayout::push_id(const std::string& id) {
-        ImGui::PushID(id.c_str());
-    }
-
-    void PyUILayout::push_id_int(int id) {
-        ImGui::PushID(id);
-    }
-
-    void PyUILayout::pop_id() {
-        ImGui::PopID();
-    }
-
-    // Window control
-    bool PyUILayout::begin_window(const std::string& title, int flags) {
-        return ImGui::Begin(title.c_str(), nullptr, flags);
-    }
-
-    std::tuple<bool, bool> PyUILayout::begin_window_closable(const std::string& title, int flags) {
-        bool open = true;
-        const bool visible = ImGui::Begin(title.c_str(), &open, flags | ImGuiWindowFlags_NoDocking);
-        return {visible, open};
-    }
-
-    void PyUILayout::end_window() {
-        ImGui::End();
-    }
-
-    void PyUILayout::push_window_style() {
-        constexpr float WINDOW_ROUNDING = 8.0f;
-        constexpr float WINDOW_PADDING = 16.0f;
-        constexpr float WINDOW_BG_ALPHA = 0.98f;
-
-        const auto& t = lfs::vis::theme();
-        const float scale = python::get_shared_dpi_scale();
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, WINDOW_ROUNDING * scale);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(WINDOW_PADDING * scale, WINDOW_PADDING * scale));
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(t.palette.surface.x, t.palette.surface.y,
-                                                        t.palette.surface.z, WINDOW_BG_ALPHA));
-    }
-
-    void PyUILayout::pop_window_style() {
-        ImGui::PopStyleColor(1);
-        ImGui::PopStyleVar(2);
-    }
-
-    void PyUILayout::set_next_window_pos(std::tuple<float, float> pos, bool first_use) {
-        ImGui::SetNextWindowPos({std::get<0>(pos), std::get<1>(pos)}, first_use ? ImGuiCond_FirstUseEver : ImGuiCond_Always);
-    }
-
-    void PyUILayout::set_next_window_size(std::tuple<float, float> size, bool first_use) {
-        ImGui::SetNextWindowSize({std::get<0>(size), std::get<1>(size)}, first_use ? ImGuiCond_FirstUseEver : ImGuiCond_Always);
-    }
-
-    void PyUILayout::set_next_window_pos_centered(bool first_use) {
-        const auto* viewport = ImGui::GetMainViewport();
-        const ImVec2 center{viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                            viewport->WorkPos.y + viewport->WorkSize.y * 0.5f};
-        ImGui::SetNextWindowPos(center, first_use ? ImGuiCond_FirstUseEver : ImGuiCond_Always, {0.5f, 0.5f});
-    }
+    void PyUILayout::push_id(const std::string&) {}
+    void PyUILayout::push_id_int(int) {}
+    void PyUILayout::pop_id() {}
+    bool PyUILayout::begin_window(const std::string&, int) { return true; }
+    std::tuple<bool, bool> PyUILayout::begin_window_closable(const std::string&, int) { return {true, true}; }
+    void PyUILayout::end_window() {}
+    void PyUILayout::push_window_style() {}
+    void PyUILayout::pop_window_style() {}
+    void PyUILayout::set_next_window_pos(std::tuple<float, float>, bool) {}
+    void PyUILayout::set_next_window_size(std::tuple<float, float>, bool) {}
+    void PyUILayout::set_next_window_pos_centered(bool) {}
+    void PyUILayout::set_next_window_bg_alpha(float) {}
 
     std::tuple<float, float> PyUILayout::get_viewport_pos() {
         if (has_viewport_bounds()) {
@@ -2932,8 +1985,7 @@ namespace lfs::python {
             get_viewport_bounds(x, y, w, h);
             return {x, y};
         }
-        const auto* viewport = ImGui::GetMainViewport();
-        return {viewport->WorkPos.x, viewport->WorkPos.y};
+        return {0.0f, 0.0f};
     }
 
     std::tuple<float, float> PyUILayout::get_viewport_size() {
@@ -2942,103 +1994,20 @@ namespace lfs::python {
             get_viewport_bounds(x, y, w, h);
             return {w, h};
         }
-        const auto* viewport = ImGui::GetMainViewport();
-        return {viewport->WorkSize.x, viewport->WorkSize.y};
+        return {0.0f, 0.0f};
     }
 
-    float PyUILayout::get_dpi_scale() {
-        return python::get_shared_dpi_scale();
-    }
-
-    void PyUILayout::set_mouse_cursor_hand() {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    }
-
-    void PyUILayout::set_next_window_bg_alpha(float alpha) {
-        ImGui::SetNextWindowBgAlpha(alpha);
-    }
-
-    namespace {
-        ImGuiStyleVar string_to_style_var(const std::string& var) {
-            static const std::unordered_map<std::string, ImGuiStyleVar> map = {
-                {"WindowRounding", ImGuiStyleVar_WindowRounding},
-                {"WindowPadding", ImGuiStyleVar_WindowPadding},
-                {"FrameRounding", ImGuiStyleVar_FrameRounding},
-                {"FramePadding", ImGuiStyleVar_FramePadding},
-                {"ItemSpacing", ImGuiStyleVar_ItemSpacing},
-                {"ItemInnerSpacing", ImGuiStyleVar_ItemInnerSpacing},
-                {"IndentSpacing", ImGuiStyleVar_IndentSpacing},
-                {"ScrollbarSize", ImGuiStyleVar_ScrollbarSize},
-                {"ScrollbarRounding", ImGuiStyleVar_ScrollbarRounding},
-                {"GrabMinSize", ImGuiStyleVar_GrabMinSize},
-                {"GrabRounding", ImGuiStyleVar_GrabRounding},
-                {"TabRounding", ImGuiStyleVar_TabRounding},
-                {"ChildRounding", ImGuiStyleVar_ChildRounding},
-                {"PopupRounding", ImGuiStyleVar_PopupRounding},
-                {"WindowBorderSize", ImGuiStyleVar_WindowBorderSize},
-                {"FrameBorderSize", ImGuiStyleVar_FrameBorderSize},
-            };
-            auto it = map.find(var);
-            if (it != map.end())
-                return it->second;
-            LOG_WARN("Unknown ImGui style var: {}", var);
-            return ImGuiStyleVar_WindowRounding;
-        }
-
-        ImGuiCol string_to_style_color(const std::string& col) {
-            std::string lower = col;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-
-            static const std::unordered_map<std::string, ImGuiCol> map = {
-                {"windowbg", ImGuiCol_WindowBg},
-                {"childbg", ImGuiCol_ChildBg},
-                {"popupbg", ImGuiCol_PopupBg},
-                {"border", ImGuiCol_Border},
-                {"framebg", ImGuiCol_FrameBg},
-                {"framebghovered", ImGuiCol_FrameBgHovered},
-                {"framebgactive", ImGuiCol_FrameBgActive},
-                {"button", ImGuiCol_Button},
-                {"buttonhovered", ImGuiCol_ButtonHovered},
-                {"buttonactive", ImGuiCol_ButtonActive},
-                {"header", ImGuiCol_Header},
-                {"headerhovered", ImGuiCol_HeaderHovered},
-                {"headeractive", ImGuiCol_HeaderActive},
-                {"text", ImGuiCol_Text},
-                {"textdisabled", ImGuiCol_TextDisabled},
-                {"plothistogram", ImGuiCol_PlotHistogram},
-                {"plothistogramhovered", ImGuiCol_PlotHistogramHovered},
-            };
-            auto it = map.find(lower);
-            if (it != map.end())
-                return it->second;
-            LOG_WARN("Unknown ImGui style color: {}", col);
-            return ImGuiCol_WindowBg;
-        }
-    } // namespace
-
-    void PyUILayout::push_style_var_float(const std::string& var, float value) {
-        ImGui::PushStyleVar(string_to_style_var(var), value);
-    }
-
-    void PyUILayout::push_style_var_vec2(const std::string& var, std::tuple<float, float> value) {
-        ImGui::PushStyleVar(string_to_style_var(var), {std::get<0>(value), std::get<1>(value)});
-    }
-
-    void PyUILayout::pop_style_var(int count) {
-        ImGui::PopStyleVar(count);
-    }
-
-    void PyUILayout::push_style_color(const std::string& col, nb::object color) {
-        ImGui::PushStyleColor(string_to_style_color(col), tuple_to_imvec4(color));
-    }
-
-    void PyUILayout::pop_style_color(int count) {
-        ImGui::PopStyleColor(count);
-    }
+    float PyUILayout::get_dpi_scale() { return python::get_shared_dpi_scale(); }
+    void PyUILayout::set_mouse_cursor_hand() {}
+    void PyUILayout::push_style_var_float(const std::string&, float) {}
+    void PyUILayout::push_style_var_vec2(const std::string&, std::tuple<float, float>) {}
+    void PyUILayout::pop_style_var(int) {}
+    void PyUILayout::push_style_color(const std::string&, nb::object) {}
+    void PyUILayout::pop_style_color(int) {}
 
     std::tuple<bool, nb::object> PyUILayout::prop(nb::object data,
                                                   const std::string& prop_id,
-                                                  std::optional<std::string> text) {
+                                                  std::optional<std::string>) {
         if (!nb::hasattr(data, "get_all_properties")) {
             throw std::runtime_error("prop() requires object with get_all_properties() method");
         }
@@ -3054,225 +2023,11 @@ namespace lfs::python {
             throw std::runtime_error("Unknown property '" + prop_id + "'");
         }
 
-        nb::object prop_desc = all_props[prop_key];
-
         const bool has_get = nb::hasattr(data, "get") && PyCallable_Check(data.attr("get").ptr());
         nb::object current_value = has_get
                                        ? data.attr("get")(nb::cast(prop_id))
                                        : data.attr(prop_id.c_str());
-        const std::string prop_type = nb::cast<std::string>(
-            nb::object(prop_desc.attr("__class__").attr("__name__")));
-
-        std::string prop_name_str;
-        if (nb::hasattr(prop_desc, "name")) {
-            prop_name_str = nb::cast<std::string>(prop_desc.attr("name"));
-        }
-        std::string display_name = text.value_or(
-            !prop_name_str.empty() ? prop_name_str : prop_id);
-
-        std::string description;
-        if (nb::hasattr(prop_desc, "description")) {
-            description = nb::cast<std::string>(prop_desc.attr("description"));
-        }
-
-        bool changed = false;
-        nb::object new_value = current_value;
-
-        if (prop_type == "FloatProperty") {
-            float v = nb::cast<float>(current_value);
-            float min_v = nb::cast<float>(prop_desc.attr("min"));
-            float max_v = nb::cast<float>(prop_desc.attr("max"));
-            float step = nb::cast<float>(prop_desc.attr("step"));
-
-            bool use_slider = (min_v != -std::numeric_limits<float>::infinity() &&
-                               max_v != std::numeric_limits<float>::infinity());
-
-            if (use_slider) {
-                auto [c, nv] = slider_float(display_name, v, min_v, max_v);
-                changed = c;
-                new_value = nb::cast(nv);
-            } else {
-                auto [c, nv] = drag_float(display_name, v, step, min_v, max_v);
-                changed = c;
-                new_value = nb::cast(nv);
-            }
-        } else if (prop_type == "IntProperty") {
-            int v = nb::cast<int>(current_value);
-            int min_v = nb::cast<int>(prop_desc.attr("min"));
-            int max_v = nb::cast<int>(prop_desc.attr("max"));
-
-            bool use_slider = (min_v != -(1 << 30) && max_v != (1 << 30));
-
-            if (use_slider) {
-                auto [c, nv] = slider_int(display_name, v, min_v, max_v);
-                changed = c;
-                new_value = nb::cast(nv);
-            } else {
-                auto [c, nv] = drag_int(display_name, v, 1.0f, min_v, max_v);
-                changed = c;
-                new_value = nb::cast(nv);
-            }
-        } else if (prop_type == "BoolProperty") {
-            bool v = nb::cast<bool>(current_value);
-            auto [c, nv] = checkbox(display_name, v);
-            changed = c;
-            new_value = nb::cast(nv);
-        } else if (prop_type == "StringProperty") {
-            std::string v = nb::cast<std::string>(current_value);
-            auto [c, nv] = input_text(display_name, v);
-            changed = c;
-            new_value = nb::cast(nv);
-        } else if (prop_type == "EnumProperty") {
-            nb::object items_obj = prop_desc.attr("items");
-            std::vector<std::string> items;
-            int current_idx = 0;
-            std::string current_id = nb::cast<std::string>(current_value);
-
-            size_t idx = 0;
-            for (auto item : items_obj) {
-                nb::tuple t = nb::cast<nb::tuple>(item);
-                std::string identifier = nb::cast<std::string>(t[0]);
-                std::string lbl = nb::cast<std::string>(t[1]);
-                items.push_back(lbl);
-                if (identifier == current_id) {
-                    current_idx = static_cast<int>(idx);
-                }
-                idx++;
-            }
-
-            auto [c, new_idx] = combo(display_name, current_idx, items);
-            changed = c;
-            if (changed && new_idx >= 0 && new_idx < static_cast<int>(items.size())) {
-                nb::tuple t = nb::cast<nb::tuple>(items_obj[new_idx]);
-                new_value = t[0];
-            } else {
-                new_value = nb::cast(current_id);
-            }
-        } else if (prop_type == "FloatVectorProperty") {
-            nb::tuple t = nb::cast<nb::tuple>(current_value);
-            int size = nb::cast<int>(prop_desc.attr("size"));
-            std::string subtype;
-            if (nb::hasattr(prop_desc, "subtype")) {
-                subtype = nb::cast<std::string>(prop_desc.attr("subtype"));
-            }
-
-            if (size == 3) {
-                float v[3] = {nb::cast<float>(t[0]), nb::cast<float>(t[1]), nb::cast<float>(t[2])};
-                if (subtype == "COLOR" || subtype == "COLOR_GAMMA") {
-                    changed = ImGui::ColorEdit3(display_name.c_str(), v);
-                } else {
-                    changed = vis::gui::widgets::DragFloat3(display_name.c_str(), v, 0.01f);
-                }
-                new_value = nb::make_tuple(v[0], v[1], v[2]);
-            } else if (size == 4) {
-                float v[4] = {nb::cast<float>(t[0]), nb::cast<float>(t[1]),
-                              nb::cast<float>(t[2]), nb::cast<float>(t[3])};
-                if (subtype == "COLOR" || subtype == "COLOR_GAMMA") {
-                    changed = ImGui::ColorEdit4(display_name.c_str(), v);
-                } else {
-                    changed = vis::gui::widgets::DragFloat4(display_name.c_str(), v, 0.01f);
-                }
-                new_value = nb::make_tuple(v[0], v[1], v[2], v[3]);
-            } else if (size == 2) {
-                float v[2] = {nb::cast<float>(t[0]), nb::cast<float>(t[1])};
-                changed = vis::gui::widgets::DragFloat2(display_name.c_str(), v, 0.01f);
-                new_value = nb::make_tuple(v[0], v[1]);
-            }
-        } else if (prop_type == "IntVectorProperty") {
-            nb::tuple t = nb::cast<nb::tuple>(current_value);
-            int size = nb::cast<int>(prop_desc.attr("size"));
-
-            if (size == 3) {
-                int v[3] = {nb::cast<int>(t[0]), nb::cast<int>(t[1]), nb::cast<int>(t[2])};
-                changed = vis::gui::widgets::DragInt3(display_name.c_str(), v);
-                new_value = nb::make_tuple(v[0], v[1], v[2]);
-            } else if (size == 4) {
-                int v[4] = {nb::cast<int>(t[0]), nb::cast<int>(t[1]),
-                            nb::cast<int>(t[2]), nb::cast<int>(t[3])};
-                changed = vis::gui::widgets::DragInt4(display_name.c_str(), v);
-                new_value = nb::make_tuple(v[0], v[1], v[2], v[3]);
-            } else if (size == 2) {
-                int v[2] = {nb::cast<int>(t[0]), nb::cast<int>(t[1])};
-                changed = vis::gui::widgets::DragInt2(display_name.c_str(), v);
-                new_value = nb::make_tuple(v[0], v[1]);
-            }
-        } else if (prop_type == "TensorProperty") {
-            std::string info_str = "None";
-            if (!current_value.is_none()) {
-                try {
-                    nb::object shape = current_value.attr("shape");
-                    nb::object dtype = current_value.attr("dtype");
-                    nb::object device = current_value.attr("device");
-
-                    std::string shape_str = "[";
-                    size_t idx = 0;
-                    for (auto dim : shape) {
-                        if (idx > 0)
-                            shape_str += ", ";
-                        shape_str += std::to_string(nb::cast<int64_t>(dim));
-                        ++idx;
-                    }
-                    shape_str += "]";
-
-                    size_t num_elements = 1;
-                    for (auto dim : shape) {
-                        num_elements *= nb::cast<size_t>(dim);
-                    }
-                    std::string dtype_str = nb::cast<std::string>(nb::str(dtype));
-                    size_t bytes_per_elem = 4;
-                    if (dtype_str.find("float32") != std::string::npos)
-                        bytes_per_elem = 4;
-                    else if (dtype_str.find("float16") != std::string::npos)
-                        bytes_per_elem = 2;
-                    else if (dtype_str.find("int32") != std::string::npos)
-                        bytes_per_elem = 4;
-                    else if (dtype_str.find("int64") != std::string::npos)
-                        bytes_per_elem = 8;
-                    else if (dtype_str.find("bool") != std::string::npos)
-                        bytes_per_elem = 1;
-
-                    double size_mb = static_cast<double>(num_elements * bytes_per_elem) / (1024.0 * 1024.0);
-                    char size_buf[32];
-                    if (size_mb >= 1.0) {
-                        snprintf(size_buf, sizeof(size_buf), "%.1f MB", size_mb);
-                    } else {
-                        snprintf(size_buf, sizeof(size_buf), "%.1f KB", size_mb * 1024.0);
-                    }
-
-                    info_str = "Tensor(" + shape_str + ", " + dtype_str + ", " +
-                               nb::cast<std::string>(nb::str(device)) + ") " + size_buf;
-                } catch (...) {
-                    info_str = "Tensor(...)";
-                }
-            }
-            ImGui::TextDisabled("%s: %s", display_name.c_str(), info_str.c_str());
-        }
-
-        if (!description.empty() && is_item_hovered()) {
-            set_tooltip(description);
-        }
-
-        if (changed) {
-            const bool has_set = nb::hasattr(data, "set") && PyCallable_Check(data.attr("set").ptr());
-            if (has_set) {
-                data.attr("set")(nb::cast(prop_id), new_value);
-            } else {
-                nb::setattr(data, prop_id.c_str(), new_value);
-            }
-
-            if (nb::hasattr(prop_desc, "update")) {
-                nb::object update_cb = prop_desc.attr("update");
-                if (!update_cb.is_none() && PyCallable_Check(update_cb.ptr())) {
-                    try {
-                        update_cb(data, nb::none());
-                    } catch (const nb::python_error& e) {
-                        LOG_ERROR("Property update callback error: {}", e.what());
-                    }
-                }
-            }
-        }
-
-        return {changed, new_value};
+        return {false, current_value};
     }
 
     void shutdown_dynamic_textures() {
@@ -3371,15 +2126,20 @@ namespace lfs::python {
         });
 
         m.def("get_mouse_screen_pos", []() -> nb::tuple {
-            const auto& io = ImGui::GetIO();
-            return nb::make_tuple(io.MousePos.x, io.MousePos.y);
+            float x = 0.0f;
+            float y = 0.0f;
+            SDL_GetMouseState(&x, &y);
+            return nb::make_tuple(x, y);
         });
 
         m.def(
             "get_display_size", []() -> nb::tuple {
-                const auto* vp = ImGui::GetMainViewport();
-                assert(vp);
-                return nb::make_tuple(vp->WorkSize.x, vp->WorkSize.y);
+                if (has_viewport_bounds()) {
+                    float x, y, w, h;
+                    get_viewport_bounds(x, y, w, h);
+                    return nb::make_tuple(w, h);
+                }
+                return nb::make_tuple(0.0f, 0.0f);
             },
             "Get display work area size as (width, height)");
     }
@@ -3699,7 +2459,7 @@ namespace lfs::python {
             .def("capture_mouse_from_app", &PyUILayout::capture_mouse_from_app, nb::arg("capture") = true, "Set mouse capture flag for the application")
             // Scrolling
             .def("set_scroll_here_y", &PyUILayout::set_scroll_here_y, nb::arg("center_y_ratio") = 0.5f, "Scroll to current cursor Y position")
-            // ImDrawList for custom row backgrounds
+            // Custom row backgrounds
             .def("get_cursor_screen_pos", &PyUILayout::get_cursor_screen_pos, "Get cursor position in screen coordinates as (x, y)")
             .def("get_mouse_pos", &PyUILayout::get_mouse_pos, "Get mouse position in screen coordinates as (x, y)")
             .def("get_window_pos", &PyUILayout::get_window_pos, "Get window position in screen coordinates as (x, y)")
@@ -3734,17 +2494,13 @@ namespace lfs::python {
                  nb::arg("size"), nb::arg("selected") = false, nb::arg("disabled") = false,
                  nb::arg("tooltip") = "", "Draw a toolbar-style icon button with selection state")
             .def(
-                "image_texture", [](PyUILayout& /*self*/, PyDynamicTexture& tex, std::tuple<float, float> size, nb::object tint) {
+                "image_texture", [](PyUILayout& self, PyDynamicTexture& tex, std::tuple<float, float> size, nb::object tint) {
                     if (!tex.valid())
                         return;
-                    auto [u1, v1] = tex.uv1();
-                    const ImVec4 t = tint.is_none() ? ImVec4(1, 1, 1, 1) : tuple_to_imvec4(tint);
-                    ImGui::Image(static_cast<ImTextureID>(tex.texture_id()),
-                                 {std::get<0>(size), std::get<1>(size)},
-                                 {0, 0}, {u1, v1}, t, {0, 0, 0, 0});
+                    self.image_uv(tex.texture_id(), size, {0.0f, 0.0f}, tex.uv1(), std::move(tint));
                 },
                 nb::arg("texture"), nb::arg("size"), nb::arg("tint") = nb::none(), "Draw a DynamicTexture with automatic UV scaling")
-            .def("image_tensor", [](PyUILayout& /*self*/, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
+            .def("image_tensor", [](PyUILayout& self, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
                     PyDynamicTexture* tex_ptr = nullptr;
                     {
                         std::lock_guard lock(g_dynamic_textures_mutex);
@@ -3760,10 +2516,7 @@ namespace lfs::python {
                     }
                     tex_ptr->update(tensor);
                     auto& tex = *tex_ptr;
-                    auto [u1, v1] = tex.uv1();
-                    const ImVec4 t = tint.is_none() ? ImVec4(1, 1, 1, 1) : tuple_to_imvec4(tint);
-                    ImGui::Image(static_cast<ImTextureID>(tex.texture_id()),
-                                 {std::get<0>(size), std::get<1>(size)}, {0, 0}, {u1, v1}, t, {0, 0, 0, 0}); }, nb::arg("label"), nb::arg("tensor"), nb::arg("size"), nb::arg("tint") = nb::none(), "Draw a tensor as an image, caching the UI texture by label")
+                    self.image_uv(tex.texture_id(), size, {0.0f, 0.0f}, tex.uv1(), std::move(tint)); }, nb::arg("label"), nb::arg("tensor"), nb::arg("size"), nb::arg("tint") = nb::none(), "Draw a tensor as an image, caching the UI texture by label")
             // Drag-drop
             .def("begin_drag_drop_source", &PyUILayout::begin_drag_drop_source, "Begin a drag-drop source on the last item, returns True if dragging")
             .def("set_drag_drop_payload", &PyUILayout::set_drag_drop_payload, nb::arg("type"), nb::arg("data"), "Set the drag-drop payload type and data string")
@@ -4153,38 +2906,38 @@ namespace lfs::python {
             nb::arg("tool"), "Switch to a toolbar tool (none, selection, translate, rotate, scale, mirror, align, cropbox)");
 
         // Key enum (subset of commonly used keys)
-        nb::enum_<ImGuiKey>(m, "Key")
-            .value("ESCAPE", ImGuiKey_Escape)
-            .value("ENTER", ImGuiKey_Enter)
-            .value("TAB", ImGuiKey_Tab)
-            .value("BACKSPACE", ImGuiKey_Backspace)
-            .value("DELETE", ImGuiKey_Delete)
-            .value("SPACE", ImGuiKey_Space)
-            .value("LEFT", ImGuiKey_LeftArrow)
-            .value("RIGHT", ImGuiKey_RightArrow)
-            .value("UP", ImGuiKey_UpArrow)
-            .value("DOWN", ImGuiKey_DownArrow)
-            .value("HOME", ImGuiKey_Home)
-            .value("END", ImGuiKey_End)
-            .value("F", ImGuiKey_F)
-            .value("I", ImGuiKey_I)
-            .value("M", ImGuiKey_M)
-            .value("R", ImGuiKey_R)
-            .value("T", ImGuiKey_T)
-            .value("_1", ImGuiKey_1)
-            .value("MINUS", ImGuiKey_Minus)
-            .value("EQUAL", ImGuiKey_Equal)
-            .value("F2", ImGuiKey_F2);
+        nb::enum_<PyKey>(m, "Key")
+            .value("ESCAPE", PyKey::ESCAPE)
+            .value("ENTER", PyKey::ENTER)
+            .value("TAB", PyKey::TAB)
+            .value("BACKSPACE", PyKey::BACKSPACE)
+            .value("DELETE", PyKey::DELETE_KEY)
+            .value("SPACE", PyKey::SPACE)
+            .value("LEFT", PyKey::LEFT)
+            .value("RIGHT", PyKey::RIGHT)
+            .value("UP", PyKey::UP)
+            .value("DOWN", PyKey::DOWN)
+            .value("HOME", PyKey::HOME)
+            .value("END", PyKey::END)
+            .value("F", PyKey::F)
+            .value("I", PyKey::I)
+            .value("M", PyKey::M)
+            .value("R", PyKey::R)
+            .value("T", PyKey::T)
+            .value("_1", PyKey::KEY_1)
+            .value("MINUS", PyKey::MINUS)
+            .value("EQUAL", PyKey::EQUAL)
+            .value("F2", PyKey::F2);
 
         // Key input functions
         m.def(
             "is_key_pressed",
-            [](ImGuiKey key, bool repeat) { return ImGui::IsKeyPressed(key, repeat); },
+            [](PyKey, bool) { return false; },
             nb::arg("key"), nb::arg("repeat") = true, "Check if a key was pressed this frame");
 
         m.def(
             "is_key_down",
-            [](ImGuiKey key) { return ImGui::IsKeyDown(key); },
+            [](PyKey) { return false; },
             nb::arg("key"), "Check if a key is currently held down");
 
         m.def(
@@ -4944,11 +3697,7 @@ namespace lfs::python {
 
         m.def(
             "section_header",
-            [](const std::string& text) {
-                const auto& t = lfs::vis::theme();
-                ImGui::TextColored(t.palette.text_dim, "%s", text.c_str());
-                ImGui::Separator();
-            },
+            [](const std::string&) {},
             nb::arg("text"), "Draw a section header with text and separator");
 
         m.def("set_sequencer_visible", &set_sequencer_visible, nb::arg("visible"),
@@ -5345,7 +4094,7 @@ namespace lfs::python {
 
         m.def(
             "set_mouse_cursor_hand",
-            []() { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); },
+            []() {},
             "Set mouse cursor to hand pointer for this frame");
 
         // Language control (for Python-driven Edit menu)
@@ -5390,30 +4139,17 @@ namespace lfs::python {
         m.def("show_input_settings", &show_input_settings, "Show input settings window");
         m.def("show_python_console", &show_python_console, "Show Python console");
         m.def(
-            "get_time", []() { return ImGui::GetTime(); }, "Get time in seconds since application start");
+            "get_time",
+            []() {
+                static const auto start = std::chrono::steady_clock::now();
+                const auto now = std::chrono::steady_clock::now();
+                return std::chrono::duration<double>(now - start).count();
+            },
+            "Get time in seconds since application start");
 
         // Register all Python callbacks via consolidated bridge
         PyBridge bridge;
-        bridge.prepare_ui = []() {
-            void* const ctx = get_imgui_context();
-            if (!ctx)
-                return;
-            ImGui::SetCurrentContext(static_cast<ImGuiContext*>(ctx));
-            void* alloc_fn{};
-            void* free_fn{};
-            void* user_data{};
-            get_imgui_allocator_functions(&alloc_fn, &free_fn, &user_data);
-            if (alloc_fn && free_fn) {
-                ImGui::SetAllocatorFunctions(
-                    reinterpret_cast<ImGuiMemAllocFunc>(alloc_fn),
-                    reinterpret_cast<ImGuiMemFreeFunc>(free_fn),
-                    user_data);
-            }
-
-            void* const plot_ctx = get_implot_context();
-            if (plot_ctx)
-                ImPlot::SetCurrentContext(static_cast<ImPlotContext*>(plot_ctx));
-        };
+        bridge.prepare_ui = []() {};
         bridge.draw_menus = [](MenuLocation loc) { PyMenuRegistry::instance().draw_menu_items(loc); };
         bridge.has_menus = [](MenuLocation loc) { return PyMenuRegistry::instance().has_items(loc); };
         bridge.has_menu_bar_entries = []() { return PyMenuRegistry::instance().has_menu_bar_entries(); };

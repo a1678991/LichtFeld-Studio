@@ -45,10 +45,16 @@ namespace lfs::python {
         InputInt,
         Combo,
         Selectable,
+        Image,
+        ImageButton,
+        MenuBar,
+        Menu,
+        MenuItem,
         CollapsHeader,
         Separator,
         Spacing,
         ProgressBar,
+        PlotLines,
         DisabledGroup,
         Line,
     };
@@ -85,6 +91,7 @@ namespace lfs::python {
         float wheel = 0.0f;
         bool double_clicked = false;
         bool dragging = false;
+        bool right_clicked = false;
     };
 
     struct TableState {
@@ -308,7 +315,7 @@ namespace lfs::python {
         std::tuple<bool, bool> menu_item_toggle(const std::string& label, const std::string& shortcut, bool selected);
         bool menu_item_shortcut(const std::string& label, const std::string& shortcut, bool enabled = true);
 
-        // --- Popups (no-op) ---
+        // --- Popups ---
         bool begin_popup(const std::string& id);
         void open_popup(const std::string& id);
         void end_popup();
@@ -320,7 +327,7 @@ namespace lfs::python {
         void push_modal_style();
         void pop_modal_style();
 
-        // --- Images (no-op Phase 3) ---
+        // --- Images ---
         void image(uint64_t texture_id, std::tuple<float, float> size, nb::object tint = nb::none());
         void image_uv(uint64_t texture_id, std::tuple<float, float> size,
                       std::tuple<float, float> uv0, std::tuple<float, float> uv1,
@@ -370,7 +377,7 @@ namespace lfs::python {
                                                                   float neutral_x, float neutral_y,
                                                                   float range = 0.5f);
 
-        // --- Plots (no-op) ---
+        // --- Plots ---
         void plot_lines(const std::string& label, nb::object values,
                         float scale_min = 0.0f, float scale_max = 0.0f,
                         std::tuple<float, float> size = {0.0f, 0.0f});
@@ -411,6 +418,10 @@ namespace lfs::python {
         Rml::Element* ensure_line_container();
         void finish_current_line();
         void prune_excess_slots(ContainerLevel& level);
+        void push_persistent_container(const std::string& key, Rml::Element* container);
+        void pop_persistent_container();
+        bool menu_item_impl(const std::string& label, const std::string& shortcut,
+                            bool enabled, bool selected);
         std::string build_id(const std::string& key) const;
         std::string build_slot_id(const char* prefix, const std::string* label = nullptr) const;
         std::string color_to_css(nb::object color) const;

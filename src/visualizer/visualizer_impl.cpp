@@ -1045,14 +1045,14 @@ namespace lfs::vis {
                       viewport_.windowSize.x, viewport_.windowSize.y);
         }
 
-        // Initialize GUI (sets up ImGui, builds font atlas)
+        // Initialize GUI systems.
         if (!gui_initialized_) {
             LOG_TIMER("startup.gui_manager.init");
             gui_manager_->init();
             gui_initialized_ = true;
         }
 
-        // InputController requires ImGui to be initialized
+        // InputController requires the GUI focus state to be initialized.
         if (!input_controller_) {
             input_controller_ = std::make_unique<InputController>(
                 window_manager_->getWindow(), viewport_);

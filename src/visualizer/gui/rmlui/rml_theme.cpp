@@ -111,7 +111,7 @@ namespace lfs::vis::gui::rml_theme {
     }
 
     namespace {
-        ImVec4 blend(const ImVec4& base, const ImVec4& accent, float factor) {
+        ThemeColor blend(const ThemeColor& base, const ThemeColor& accent, float factor) {
             return {base.x + (accent.x - base.x) * factor,
                     base.y + (accent.y - base.y) * factor,
                     base.z + (accent.z - base.z) * factor, 1.0f};
@@ -122,14 +122,14 @@ namespace lfs::vis::gui::rml_theme {
             seed ^= std::hash<T>{}(value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
         }
 
-        void hashColor(std::size_t& seed, const ImVec4& color) {
+        void hashColor(std::size_t& seed, const ThemeColor& color) {
             hashCombine(seed, color.x);
             hashCombine(seed, color.y);
             hashCombine(seed, color.z);
             hashCombine(seed, color.w);
         }
 
-        void hashVec2(std::size_t& seed, const ImVec2& value) {
+        void hashVec2(std::size_t& seed, const ThemeVec2& value) {
             hashCombine(seed, value.x);
             hashCombine(seed, value.y);
         }
@@ -261,7 +261,7 @@ namespace lfs::vis::gui::rml_theme {
             return out;
         }
 
-        std::optional<ImVec4> paletteColor(const Theme& t, const std::string& name) {
+        std::optional<ThemeColor> paletteColor(const Theme& t, const std::string& name) {
             const auto& p = t.palette;
             if (name == "background" || name == "palette.background")
                 return p.background;
@@ -294,9 +294,9 @@ namespace lfs::vis::gui::rml_theme {
             if (name == "row_odd" || name == "palette.row_odd")
                 return p.row_odd;
             if (name == "white")
-                return ImVec4{1, 1, 1, 1};
+                return ThemeColor{1, 1, 1, 1};
             if (name == "black")
-                return ImVec4{0, 0, 0, 1};
+                return ThemeColor{0, 0, 0, 1};
             if (name == "menu.background")
                 return t.menu_background();
             if (name == "menu.hover")
@@ -353,7 +353,7 @@ namespace lfs::vis::gui::rml_theme {
             return std::format("{:.2f}", value);
         }
 
-        std::optional<ImVec4> resolveColorExpression(const Theme& t, const std::string& expr) {
+        std::optional<ThemeColor> resolveColorExpression(const Theme& t, const std::string& expr) {
             if (auto c = paletteColor(t, expr))
                 return c;
 
@@ -415,7 +415,7 @@ namespace lfs::vis::gui::rml_theme {
                                                         colorToRmlAlpha(p.primary, 0.40f));
             const auto progress_fill_decor = std::format("decorator: horizontal-gradient({} {}); background-color: transparent",
                                                          colorToRml(p.primary),
-                                                         colorToRml(blend(p.primary, ImVec4(1, 1, 1, 1), 0.08f)));
+                                                         colorToRml(blend(p.primary, ThemeColor{1, 1, 1, 1}, 0.08f)));
             const auto scrub_bg_top = colorToRml(is_light
                                                      ? blend(p.surface, p.surface_bright, 0.10f)
                                                      : blend(p.surface, p.surface_bright, 0.45f));
@@ -436,12 +436,12 @@ namespace lfs::vis::gui::rml_theme {
             const auto histogram_fill_decor =
                 std::format("decorator: vertical-gradient({} {}); background-color: {}",
                             colorToRml(blend(p.primary_dim, p.primary, 0.25f)),
-                            colorToRml(blend(p.primary, ImVec4(1, 1, 1, 1), is_light ? 0.04f : 0.10f)),
+                            colorToRml(blend(p.primary, ThemeColor{1, 1, 1, 1}, is_light ? 0.04f : 0.10f)),
                             primary);
             const auto histogram_fill_selected_decor =
                 std::format("decorator: vertical-gradient({} {}); background-color: {}",
                             colorToRml(blend(p.warning, p.primary, 0.18f)),
-                            colorToRml(blend(p.warning, ImVec4(1, 1, 1, 1), is_light ? 0.06f : 0.12f)),
+                            colorToRml(blend(p.warning, ThemeColor{1, 1, 1, 1}, is_light ? 0.06f : 0.12f)),
                             colorToRml(p.warning));
 
             const int window_rounding = std::max(4, static_cast<int>(t.sizes.window_rounding));
@@ -449,8 +449,8 @@ namespace lfs::vis::gui::rml_theme {
                                                            t.sizes.scrollbar_rounding,
                                                            t.sizes.scrollbar_size * 0.5f)));
 
-            const ImVec4 startup_base_color = blend(p.surface, p.text, is_light ? 0.04f : 0.10f);
-            const ImVec4 startup_border_color = blend(p.border, p.text, is_light ? 0.28f : 0.38f);
+            const ThemeColor startup_base_color = blend(p.surface, p.text, is_light ? 0.04f : 0.10f);
+            const ThemeColor startup_border_color = blend(p.border, p.text, is_light ? 0.28f : 0.38f);
             std::string startup_box_shadow;
             if (t.shadows.enabled) {
                 startup_box_shadow = std::format("box-shadow: {}, {} 0dp 0dp 0dp 1dp inset;",
@@ -523,16 +523,16 @@ namespace lfs::vis::gui::rml_theme {
                 {"right_panel.resize_active", colorToRmlAlpha(p.info, 0.5f)},
                 {"modal.surface", colorToRmlAlpha(p.surface, 0.98f)},
                 {"modal.border", colorToRmlAlpha(p.border, 0.4f)},
-                {"modal.backdrop", colorToRmlAlpha(is_light ? ImVec4{0.12f, 0.14f, 0.18f, 1.0f} : p.background,
+                {"modal.backdrop", colorToRmlAlpha(is_light ? ThemeColor{0.12f, 0.14f, 0.18f, 1.0f} : p.background,
                                                    is_light ? 0.18f : 0.44f)},
                 {"overlay.surface", colorToRmlAlpha(p.surface, 0.95f)},
                 {"overlay.border", colorToRmlAlpha(p.border, 0.4f)},
                 {"viewport.icon_dim", colorToRmlAlpha(p.text, 0.9f)},
-                {"viewport.selected_hover", colorToRml(ImVec4(
+                {"viewport.selected_hover", colorToRml(ThemeColor{
                                                 std::min(1.0f, p.primary.x + 0.1f),
                                                 std::min(1.0f, p.primary.y + 0.1f),
                                                 std::min(1.0f, p.primary.z + 0.1f),
-                                                p.primary.w))},
+                                                p.primary.w})},
                 {"viewport.hover_bg", colorToRmlAlpha(p.surface_bright, 0.3f)},
                 {"viewport.status_backdrop", colorToRmlAlpha(p.background, 0.55f)},
                 {"viewport.panel_bg", colorToRmlAlpha(p.surface, 0.97f)},

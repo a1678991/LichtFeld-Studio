@@ -43,7 +43,6 @@
 #include <utility>
 #include <vector>
 #include <vulkan/vulkan.h>
-#include <imgui.h>
 
 struct SDL_Cursor;
 
@@ -203,14 +202,6 @@ namespace lfs::vis {
             void updateInputOverrides(const PanelInputState& input, bool mouse_in_viewport);
             void applyUiScale(float scale);
             void rebuildFonts(float scale);
-            void loadImGuiSettings();
-            void saveImGuiSettings() const;
-            void persistImGuiSettingsIfNeeded();
-            void beginImGuiPlatformFrame(WindowManager* window_manager,
-                                         VulkanContext* vulkan_context);
-            [[nodiscard]] bool shouldUseCachedImGuiResizeFrame(
-                const WindowManager* window_manager,
-                const VulkanContext* vulkan_context) const;
             void initCustomCursors();
             void destroyCustomCursors();
             void applyRmlCursorRequest(RmlCursorRequest req);
@@ -310,15 +301,14 @@ namespace lfs::vis {
             bool ui_hidden_ = false;
 
             // Font storage
-            ImFont* font_regular_ = nullptr;
-            ImFont* font_bold_ = nullptr;
-            ImFont* font_heading_ = nullptr;
-            ImFont* font_small_ = nullptr;
-            ImFont* font_section_ = nullptr;
-            ImFont* font_monospace_ = nullptr;
-            ImFont* mono_fonts_[FontSet::MONO_SIZE_COUNT] = {};
+            FontSet::FontHandle font_regular_ = nullptr;
+            FontSet::FontHandle font_bold_ = nullptr;
+            FontSet::FontHandle font_heading_ = nullptr;
+            FontSet::FontHandle font_small_ = nullptr;
+            FontSet::FontHandle font_section_ = nullptr;
+            FontSet::FontHandle font_monospace_ = nullptr;
+            FontSet::FontHandle mono_fonts_[FontSet::MONO_SIZE_COUNT] = {};
             float mono_font_scales_[FontSet::MONO_SIZE_COUNT] = {};
-            std::filesystem::path imgui_ini_path_;
             FontSet buildFontSet() const;
 
             // Async task management
@@ -349,9 +339,6 @@ namespace lfs::vis {
 
             // RmlUI integration
             RmlUIManager rmlui_manager_;
-            std::chrono::steady_clock::time_point last_imgui_platform_frame_time_{};
-            std::uint64_t cached_imgui_resize_frame_count_ = 0;
-            bool used_cached_imgui_resize_frame_ = false;
             std::unique_ptr<lfs::vis::VulkanViewportPass> vulkan_viewport_pass_;
             std::vector<std::unique_ptr<VulkanSceneInteropTarget>> vulkan_scene_interop_;
             std::shared_ptr<const lfs::core::Tensor> vulkan_scene_image_;

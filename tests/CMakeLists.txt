@@ -321,7 +321,7 @@ foreach(TEST_FILE ${TEST_FILES})
     endif()
 endforeach()
 
-# PyModalRegistry data layer (no ImGui) for lock-order regression tests.
+# PyModalRegistry data layer for lock-order regression tests.
 list(APPEND TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/python/lfs/py_modal_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/app/mcp_sequencer_tools.cpp
@@ -396,8 +396,6 @@ target_link_libraries(lichtfeld_tests PRIVATE
     # External libraries
     GTest::gtest
     nanobind-static
-    imgui::imgui
-    implot::implot
     ${TORCH_LIBRARIES}
     OpenImageIO::OpenImageIO
     OpenMeshCore

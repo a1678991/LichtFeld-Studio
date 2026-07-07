@@ -6,7 +6,6 @@
 #include "core/logger.hpp"
 #include "gui/panels/python_console_panel.hpp"
 #include "python/python_runtime.hpp"
-#include "theme/theme.hpp"
 #include "visualizer_impl.hpp"
 #include <algorithm>
 
@@ -18,18 +17,12 @@ namespace lfs::vis::gui {
                                          const float bottom_y,
                                          const float dpi,
                                          const bool active) {
-            auto* draw_list = static_cast<ImDrawList*>(input.fg_draw_list ? input.fg_draw_list : input.bg_draw_list);
-            if (!draw_list || bottom_y <= top_y)
-                return;
-
-            ImVec4 color = lfs::vis::theme().palette.info;
-            color.w = active ? 0.50f : 0.30f;
-
-            const float thickness = std::max(active ? 3.0f : 2.0f, (active ? 3.0f : 2.0f) * dpi);
-            const float half_thickness = thickness * 0.5f;
-            draw_list->AddRectFilled(ImVec2(edge_x - half_thickness, top_y),
-                                     ImVec2(edge_x + half_thickness, bottom_y),
-                                     ImGui::ColorConvertFloat4ToU32(color));
+            (void)input;
+            (void)edge_x;
+            (void)top_y;
+            (void)bottom_y;
+            (void)dpi;
+            (void)active;
         }
     } // namespace
 

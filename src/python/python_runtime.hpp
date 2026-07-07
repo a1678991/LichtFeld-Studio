@@ -246,7 +246,7 @@ namespace lfs::python {
         // Scroll
         double scroll_x, scroll_y;
 
-        // GUI state - true if mouse is over ImGui window
+        // GUI state - true if mouse is over an application UI surface
         bool over_gui = false;
     };
 
@@ -592,7 +592,7 @@ namespace lfs::python {
     LFS_PYTHON_RUNTIME_API bool are_plugins_loaded();
 
     // UI texture service. The executable owns the graphics backend resources; Python
-    // receives opaque ImGui texture IDs.
+    // receives opaque UI texture IDs.
     struct TextureResult {
         uint64_t texture_id;
         int width;
@@ -608,15 +608,6 @@ namespace lfs::python {
     LFS_PYTHON_RUNTIME_API TextureResult create_ui_texture(const unsigned char* data, int w, int h, int channels);
     LFS_PYTHON_RUNTIME_API void delete_ui_texture(uint64_t texture_id);
     LFS_PYTHON_RUNTIME_API int get_max_texture_size();
-
-    // ImGui state sharing across DLL boundaries (void* to avoid imgui.h dependency)
-    LFS_PYTHON_RUNTIME_API void set_imgui_context(void* ctx);
-    LFS_PYTHON_RUNTIME_API void* get_imgui_context();
-    LFS_PYTHON_RUNTIME_API void set_imgui_allocator_functions(void* alloc_func, void* free_func, void* user_data);
-    LFS_PYTHON_RUNTIME_API void get_imgui_allocator_functions(void** alloc_func, void** free_func, void** user_data);
-
-    LFS_PYTHON_RUNTIME_API void set_implot_context(void* ctx);
-    LFS_PYTHON_RUNTIME_API void* get_implot_context();
 
     LFS_PYTHON_RUNTIME_API void set_view_context_state(void* state);
     LFS_PYTHON_RUNTIME_API void* get_view_context_state();
@@ -724,12 +715,10 @@ namespace lfs::python {
 
     // Viewport draw overlay - bridge from visualizer to Python draw handlers
     // view_matrix/proj_matrix: column-major 4x4, others: float arrays
-    // draw_list: opaque pointer to ImDrawList (cast by implementation)
     using HasViewportDrawHandlersCallback = bool (*)();
     using SyncViewportOverlayDocumentCallback = bool (*)(void* document);
     // overlay_renderer: opaque pointer to lfs::rendering::ScreenOverlayRenderer (used for the
-    // queued 2D draw commands). draw_list: ImDrawList* used only for the python transform-gizmo
-    // path (still ImGui-rendered).
+    // queued 2D draw commands). draw_list is retained as an opaque legacy slot.
     using InvokeViewportOverlayCallback = void (*)(const float* view_matrix, const float* proj_matrix,
                                                    const float* vp_pos, const float* vp_size,
                                                    const float* cam_pos, const float* cam_fwd,

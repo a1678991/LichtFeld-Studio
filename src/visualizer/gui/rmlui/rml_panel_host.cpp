@@ -11,7 +11,6 @@
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/ui_widgets.hpp"
 #include "internal/resource_paths.hpp"
 #include "theme/theme.hpp"
 
@@ -28,7 +27,6 @@
 #include <cstddef>
 #include <filesystem>
 #include <format>
-#include <imgui_internal.h>
 #include <string_view>
 #include <unordered_set>
 
@@ -536,43 +534,27 @@ namespace lfs::vis::gui {
 
         renderIfDirty(w, h, display_h);
 
-        const ImVec2 panel_screen_pos = ImGui::GetCursorScreenPos();
         if (!manager_ || !manager_->getVulkanRenderInterface())
             return;
 
-        const auto* vp = ImGui::GetMainViewport();
-        const float screen_x = vp ? vp->Pos.x : 0.0f;
-        const float screen_y = vp ? vp->Pos.y : 0.0f;
-        const ImVec2 clip_min = ImGui::GetWindowDrawList()->GetClipRectMin();
-        const ImVec2 clip_max = ImGui::GetWindowDrawList()->GetClipRectMax();
-        const float clip_x1 = std::max(clip_min.x, panel_screen_pos.x);
-        const float clip_y1 = std::max(clip_min.y, panel_screen_pos.y);
-        const float clip_x2 = std::min(clip_max.x, panel_screen_pos.x + avail_w);
-        const float clip_y2 = std::min(clip_max.y, panel_screen_pos.y + display_h);
-        ImGui::Dummy(ImVec2(avail_w, display_h));
+        const float screen_origin_x = input_ ? input_->screen_x : 0.0f;
+        const float screen_origin_y = input_ ? input_->screen_y : 0.0f;
+        const float clip_x1 = pos_x;
+        const float clip_y1 = pos_y;
+        const float clip_x2 = pos_x + avail_w;
+        const float clip_y2 = pos_y + display_h;
         if (clip_x2 <= clip_x1 || clip_y2 <= clip_y1)
             return;
         manager_->queueVulkanContext(rml_context_,
-                                     panel_screen_pos.x - screen_x,
-                                     panel_screen_pos.y - screen_y,
+                                     pos_x - screen_origin_x,
+                                     pos_y - screen_origin_y,
                                      foreground_,
                                      true,
-                                     clip_x1 - screen_x,
-                                     clip_y1 - screen_y,
-                                     clip_x2 - screen_x,
-                                     clip_y2 - screen_y);
-        if (auto* popup_vp = ImGui::GetMainViewport()) {
-            const auto popup_shadow =
-                collectVisibleColorPickerPopupShadow(panel_screen_pos.x, panel_screen_pos.y);
-            if (popup_shadow) {
-                const auto& shadow = *popup_shadow;
-                auto* fg = ImGui::GetForegroundDrawList(popup_vp);
-                widgets::DrawPopoverShadowOverlay(fg,
-                                                  {shadow.x, shadow.y},
-                                                  {shadow.w, shadow.h},
-                                                  shadow.rounding);
-            }
-        }
+                                     clip_x1 - screen_origin_x,
+                                     clip_y1 - screen_origin_y,
+                                     clip_x2 - screen_origin_x,
+                                     clip_y2 - screen_origin_y);
+        (void)collectVisibleColorPickerPopupShadow(pos_x, pos_y);
     }
 
     void RmlPanelHost::resolveDirectRenderHeight(float requested_h, int& ph, float& display_h) const {
@@ -844,13 +826,7 @@ namespace lfs::vis::gui {
             direct_cache_dirty_ = false;
         }
 
-        if (const auto popover_shadow = collectVisibleColorPickerPopupShadow(screen_x, screen_y)) {
-            const auto& shadow = *popover_shadow;
-            widgets::DrawPopoverShadowOverlay(ImGui::GetForegroundDrawList(),
-                                              {shadow.x, shadow.y},
-                                              {shadow.w, shadow.h},
-                                              shadow.rounding);
-        }
+        (void)collectVisibleColorPickerPopupShadow(screen_x, screen_y);
     }
 
     bool RmlPanelHost::hitTestPanelShape(const float local_x, const float local_y,

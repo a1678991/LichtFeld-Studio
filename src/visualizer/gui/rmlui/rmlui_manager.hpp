@@ -141,8 +141,7 @@ namespace lfs::vis::gui {
         RmlCursorRequest consumeCursorRequest();
         [[nodiscard]] bool passiveMouseMoveNeedsRender(float window_x, float window_y) const;
 
-        // Focus-state aggregators across all live RmlUi contexts. These replace prior
-        // ImGui::GetIO().WantCapture* / ImGui::IsAnyItemActive() reads so viewport input
+        // Focus-state aggregators across all live RmlUi contexts so viewport input
         // suppression reflects the actual GUI surface the user is interacting with.
         [[nodiscard]] bool wantsCaptureMouse() const;
         [[nodiscard]] bool wantsCaptureKeyboard() const;

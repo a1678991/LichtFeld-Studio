@@ -1058,7 +1058,7 @@ ui.image_texture(tex, (256, 256))
 
 ### DynamicTexture
 
-GPU tensor to UI texture bridge. In the Vulkan viewer this uses the backend's opaque ImGui texture handle.
+GPU tensor to UI texture bridge. In the Vulkan viewer this uses the backend's opaque UI texture handle.
 
 ```python
 tex = lf.ui.DynamicTexture()          # Empty
@@ -1069,7 +1069,7 @@ tex = lf.ui.DynamicTexture(tensor)    # From tensor
 |--------------------|----------------------|------------------------------------------------|
 | `update(tensor)`   | `None`               | Upload `[H, W, 3\|4]` tensor (auto-converts CPU→CUDA, uint8→float32) |
 | `destroy()`        | `None`               | Release UI texture resources                   |
-| `id`               | `int`                | Opaque ImGui backend texture handle            |
+| `id`               | `int`                | Opaque UI backend texture handle            |
 | `width`            | `int`                | Current width in pixels                        |
 | `height`           | `int`                | Current height in pixels                       |
 | `valid`            | `bool`               | `True` if texture is initialized               |

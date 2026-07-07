@@ -16,7 +16,6 @@
 #include <chrono>
 #include <optional>
 #include <string>
-#include <imgui.h>
 
 namespace lfs::vis::gui {
 
@@ -138,15 +137,6 @@ namespace lfs::vis::gui {
                     .y = ctx.viewport->pos.y,
                     .width = ctx.viewport->size.x,
                     .height = ctx.viewport->size.y,
-                };
-            }
-
-            if (const auto* vp = ImGui::GetMainViewport()) {
-                return {
-                    .x = vp->WorkPos.x,
-                    .y = vp->WorkPos.y,
-                    .width = vp->WorkSize.x,
-                    .height = vp->WorkSize.y,
                 };
             }
 
@@ -548,7 +538,6 @@ namespace lfs::vis::gui {
                                          : std::chrono::steady_clock::time_point{};
 
             try {
-                ImGui::PushID(snap.id.c_str());
                 snap.panel->setPanelSpace(space);
 
                 switch (space) {
@@ -684,21 +673,7 @@ namespace lfs::vis::gui {
                                     guiFocusState().want_capture_mouse = true;
                                 }
 
-                                if (interactive) {
-                                    const int8_t dx =
-                                        pi.float_resizing ? pi.float_resize_dir_x : layout.hover_dir_x;
-                                    const int8_t dy =
-                                        pi.float_resizing ? pi.float_resize_dir_y : layout.hover_dir_y;
-                                    if (dx && dy) {
-                                        const bool nw_se = (dx == dy);
-                                        ImGui::SetMouseCursor(nw_se ? ImGuiMouseCursor_ResizeNWSE
-                                                                    : ImGuiMouseCursor_ResizeNESW);
-                                    } else if (dx) {
-                                        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-                                    } else if (dy) {
-                                        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                                    }
-                                }
+                                (void)interactive;
                             }
                         }
 
@@ -706,10 +681,6 @@ namespace lfs::vis::gui {
                         snap.panel->setForcedHeight(forced);
                         try {
                             with_panel_input(snap.panel, [&] {
-                                if (snap.panel->wantsExternalFloatingShadow()) {
-                                    widgets::DrawFloatingWindowShadow({px, py}, {w, h},
-                                                                      theme().sizes.window_rounding);
-                                }
                                 snap.panel->drawDirect(px, py, w, h, ctx);
                             });
                         } catch (...) {
@@ -728,14 +699,7 @@ namespace lfs::vis::gui {
                     break;
                 }
                 case PanelSpace::SidePanel: {
-                    const ImGuiTreeNodeFlags flags = snap.has_option(PanelOption::DEFAULT_CLOSED)
-                                                         ? ImGuiTreeNodeFlags_None
-                                                         : ImGuiTreeNodeFlags_DefaultOpen;
-                    if (snap.has_option(PanelOption::HIDE_HEADER)) {
-                        snap.panel->draw(ctx);
-                    } else if (ImGui::CollapsingHeader(snap.label.c_str(), flags)) {
-                        snap.panel->draw(ctx);
-                    }
+                    snap.panel->draw(ctx);
                     break;
                 }
                 case PanelSpace::ViewportOverlay:
@@ -752,10 +716,8 @@ namespace lfs::vis::gui {
                     break;
                 }
 
-                ImGui::PopID();
                 draw_succeeded = true;
             } catch (const std::exception& e) {
-                ImGui::PopID();
                 LOG_ERROR("Panel '{}' draw error: {}", snap.label, e.what());
             }
 
@@ -1052,13 +1014,10 @@ namespace lfs::vis::gui {
 
         bool draw_succeeded = false;
         try {
-            ImGui::PushID(snap.id.c_str());
             snap.panel->setPanelSpace(panel_space);
             snap.panel->draw(ctx);
-            ImGui::PopID();
             draw_succeeded = true;
         } catch (const std::exception& e) {
-            ImGui::PopID();
             LOG_ERROR("Panel '{}' error: {}", snap.label, e.what());
         }
 
@@ -1393,23 +1352,9 @@ namespace lfs::vis::gui {
             }
 
             try {
-                ImGui::PushID(snap.id.c_str());
-
-                if (snap.has_option(PanelOption::HIDE_HEADER)) {
-                    snap.panel->draw(ctx);
-                } else {
-                    const ImGuiTreeNodeFlags flags = snap.has_option(PanelOption::DEFAULT_CLOSED)
-                                                         ? ImGuiTreeNodeFlags_None
-                                                         : ImGuiTreeNodeFlags_DefaultOpen;
-                    if (ImGui::CollapsingHeader(snap.label.c_str(), flags)) {
-                        snap.panel->draw(ctx);
-                    }
-                }
-
-                ImGui::PopID();
+                snap.panel->draw(ctx);
                 draw_succeeded = true;
             } catch (const std::exception& e) {
-                ImGui::PopID();
                 LOG_ERROR("Panel '{}' draw error: {}", snap.label, e.what());
             }
 

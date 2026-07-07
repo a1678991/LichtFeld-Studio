@@ -1770,7 +1770,7 @@ NB_MODULE(lichtfeld, m) {
     // Packages submodule (uses uv for package management)
     lfs::python::register_packages(m);
 
-    // UI submodule (ImGui widgets and panel registration)
+    // UI submodule (widgets and panel registration)
     auto ui_module = m.def_submodule("ui", "User interface API");
     lfs::python::register_ui(ui_module);
 

@@ -228,8 +228,6 @@ target_link_libraries(lfs_visualizer
         lfs_python_utils
         lfs_sequencer
         SDL3::SDL3
-        imgui::imgui
-        implot::implot
         Zep::Zep
         glm::glm
         TBB::tbb

@@ -269,8 +269,6 @@ target_link_libraries(lfs_py PRIVATE
     CUDA::cudart
     CUDA::curand
     ${CMAKE_DL_LIBS}
-    imgui::imgui
-    implot::implot
     GPUOpen::VulkanMemoryAllocator
     $<IF:$<PLATFORM_ID:Windows>,RmlUi::RmlUi,lfs_rmlui>
 )

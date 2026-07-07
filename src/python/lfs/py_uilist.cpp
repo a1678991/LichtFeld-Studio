@@ -5,8 +5,6 @@
 #include "py_uilist.hpp"
 #include "core/logger.hpp"
 
-#include <imgui.h>
-
 namespace lfs::python {
 
     PyUIListRegistry& PyUIListRegistry::instance() {
@@ -108,58 +106,11 @@ namespace lfs::python {
             return {false, active_index};
         }
 
-        PyUIListInfo* const uilist_info = PyUIListRegistry::instance().get_uilist(listtype_name);
-        const float item_height = ImGui::GetTextLineHeightWithSpacing();
-        const float list_height = item_height * static_cast<float>(rows) + ImGui::GetStyle().WindowPadding.y * 2.0f;
-
-        const std::string child_id = "##" + list_id;
-        if (ImGui::BeginChild(child_id.c_str(), ImVec2(0, list_height), ImGuiChildFlags_Borders)) {
-            for (size_t i = 0; i < list_len; ++i) {
-                ImGui::PushID(static_cast<int>(i));
-                const bool is_selected = (static_cast<int>(i) == active_index);
-
-                nb::object item;
-                try {
-                    item = list_obj[nb::int_(i)];
-                } catch (const std::exception& e) {
-                    LOG_ERROR("template_list: failed to get item {}: {}", i, e.what());
-                    ImGui::PopID();
-                    continue;
-                }
-
-                if (uilist_info && nb::hasattr(uilist_info->list_instance, "draw_item")) {
-                    try {
-                        PyUILayout item_layout;
-                        uilist_info->list_instance.attr("draw_item")(
-                            item_layout, data, item, 0, data, propname, static_cast<int>(i));
-                        if (ImGui::IsItemClicked()) {
-                            new_index = static_cast<int>(i);
-                            changed = true;
-                        }
-                    } catch (const std::exception& e) {
-                        LOG_ERROR("template_list draw_item: {}", e.what());
-                    }
-                } else {
-                    std::string item_label;
-                    try {
-                        if (nb::hasattr(item, "name")) {
-                            item_label = nb::cast<std::string>(item.attr("name"));
-                        } else {
-                            item_label = nb::cast<std::string>(nb::repr(item));
-                        }
-                    } catch (const std::exception&) {
-                        item_label = "Item " + std::to_string(i);
-                    }
-                    if (ImGui::Selectable(item_label.c_str(), is_selected)) {
-                        new_index = static_cast<int>(i);
-                        changed = true;
-                    }
-                }
-                ImGui::PopID();
-            }
-        }
-        ImGui::EndChild();
-
+        (void)layout;
+        (void)listtype_name;
+        (void)list_id;
+        (void)rows;
+        (void)list_len;
         return {changed, new_index};
     }
 
@@ -169,8 +120,8 @@ namespace lfs::python {
         nb::object draw_callback,
         bool default_open) {
 
-        const ImGuiTreeNodeFlags flags = default_open ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None;
-        const bool is_open = ImGui::TreeNodeEx(label.c_str(), flags);
+        (void)label;
+        const bool is_open = default_open;
         if (is_open) {
             nb::gil_scoped_acquire gil;
             try {
@@ -178,7 +129,6 @@ namespace lfs::python {
             } catch (const std::exception& e) {
                 LOG_ERROR("template_tree draw callback: {}", e.what());
             }
-            ImGui::TreePop();
         }
         return is_open;
     }
@@ -197,15 +147,9 @@ namespace lfs::python {
             }
         }
 
-        std::vector<const char*> items_cstr;
-        items_cstr.reserve(items.size());
-        for (const auto& s : items)
-            items_cstr.push_back(s.c_str());
-
-        if (ImGui::Combo(label.c_str(), &current_idx, items_cstr.data(), static_cast<int>(items_cstr.size()))) {
-            if (current_idx >= 0 && current_idx < static_cast<int>(items.size()))
-                return {true, items[current_idx]};
-        }
+        (void)layout;
+        (void)label;
+        (void)current_idx;
         return {false, current_id};
     }
 

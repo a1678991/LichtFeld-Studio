@@ -35,7 +35,6 @@
 #include "gui/utils/file_association.hpp"
 #include "gui/utils/native_file_dialog.hpp"
 #include "gui/vulkan_ui_texture.hpp"
-#include <implot.h>
 
 #include "gui/gpu_memory_query.hpp"
 #include "gui/gui_focus_state.hpp"
@@ -85,8 +84,6 @@
 #include <fstream>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <imgui_impl_sdl3.h>
-#include <imgui_internal.h>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -135,7 +132,6 @@ namespace lfs::vis::gui {
         constexpr auto kInteractiveTransitionGuardDuration = std::chrono::milliseconds(1200);
         constexpr auto kInteractiveIdleToggleMinInterval = std::chrono::milliseconds(750);
         constexpr auto kInteractiveTrainingToggleMinInterval = std::chrono::milliseconds(3000);
-        constexpr auto kCachedImGuiResizeFrameWindow = std::chrono::milliseconds(160);
 
         [[nodiscard]] std::string formatLodCount(const std::size_t value) {
             constexpr double kThousand = 1'000.0;
@@ -369,7 +365,7 @@ namespace lfs::vis::gui {
             }
         };
 
-        [[nodiscard]] glm::vec4 guideColor(const ImVec4& color, const float alpha) {
+        [[nodiscard]] glm::vec4 guideColor(const ThemeColor& color, const float alpha) {
             return {color.x, color.y, color.z, std::clamp(alpha, 0.0f, 1.0f)};
         }
 
@@ -593,8 +589,7 @@ namespace lfs::vis::gui {
                                        const glm::vec4& effects,
                                        const std::array<float, 4>& view_depths = {0.0f, 0.0f, 0.0f, 0.0f});
 
-        // FreeType-baked overlay font atlas. Independent of ImGui's font system — the user
-        // wants the vulkan branch to stop reaching into ImFont/io.Fonts. Atlas covers ASCII
+        // FreeType-baked overlay font atlas. Atlas covers ASCII
         // printable range, baked at a single reference pixel size; runtime font_size scales
         // glyph quads.
         struct OverlayGlyph {
@@ -2677,37 +2672,37 @@ namespace lfs::vis::gui {
                 SDL_StopTextInput(window);
         }
 
-        SDL_Cursor* systemCursorForImGuiCursor(const ImGuiMouseCursor cursor) {
+        SDL_Cursor* systemCursorForRequest(const RmlCursorRequest cursor) {
             switch (cursor) {
-            case ImGuiMouseCursor_TextInput: {
+            case RmlCursorRequest::TextInput: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_TEXT);
                 return value;
             }
-            case ImGuiMouseCursor_Hand: {
+            case RmlCursorRequest::Hand: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_POINTER);
                 return value;
             }
-            case ImGuiMouseCursor_ResizeEW: {
+            case RmlCursorRequest::ResizeEW: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
                 return value;
             }
-            case ImGuiMouseCursor_ResizeNS: {
+            case RmlCursorRequest::ResizeNS: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
                 return value;
             }
-            case ImGuiMouseCursor_ResizeNWSE: {
+            case RmlCursorRequest::ResizeNWSE: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NWSE_RESIZE);
                 return value;
             }
-            case ImGuiMouseCursor_ResizeNESW: {
+            case RmlCursorRequest::ResizeNESW: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NESW_RESIZE);
                 return value;
             }
-            case ImGuiMouseCursor_ResizeAll: {
+            case RmlCursorRequest::ResizeAll: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_MOVE);
                 return value;
             }
-            case ImGuiMouseCursor_NotAllowed: {
+            case RmlCursorRequest::NotAllowed: {
                 static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NOT_ALLOWED);
                 return value;
             }
@@ -2897,36 +2892,21 @@ namespace lfs::vis::gui {
 
         switch (req) {
         case RmlCursorRequest::Arrow:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
+            SDL_SetCursor(SDL_GetDefaultCursor());
             break;
         case RmlCursorRequest::TextInput:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
-            break;
         case RmlCursorRequest::Hand:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        case RmlCursorRequest::ResizeEW:
+        case RmlCursorRequest::ResizeNS:
+        case RmlCursorRequest::ResizeNWSE:
+        case RmlCursorRequest::ResizeNESW:
+        case RmlCursorRequest::ResizeAll:
+        case RmlCursorRequest::NotAllowed:
+            if (SDL_Cursor* cursor = systemCursorForRequest(req))
+                SDL_SetCursor(cursor);
             break;
         case RmlCursorRequest::Pipette:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
-            if (pipette_cursor_)
-                SDL_SetCursor(pipette_cursor_);
-            break;
-        case RmlCursorRequest::ResizeEW:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-            break;
-        case RmlCursorRequest::ResizeNS:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-            break;
-        case RmlCursorRequest::ResizeNWSE:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
-            break;
-        case RmlCursorRequest::ResizeNESW:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW);
-            break;
-        case RmlCursorRequest::ResizeAll:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-            break;
-        case RmlCursorRequest::NotAllowed:
-            ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);
+            SDL_SetCursor(pipette_cursor_ ? pipette_cursor_ : SDL_GetDefaultCursor());
             break;
         case RmlCursorRequest::None:
             break;
@@ -2949,137 +2929,16 @@ namespace lfs::vis::gui {
     }
 
     void GuiManager::rebuildFonts(float scale) {
-        ImGuiIO& io = ImGui::GetIO();
-
-        io.Fonts->Clear();
+        font_regular_ = nullptr;
+        font_bold_ = nullptr;
+        font_heading_ = nullptr;
+        font_small_ = nullptr;
+        font_section_ = nullptr;
+        font_monospace_ = nullptr;
+        std::fill(std::begin(mono_fonts_), std::end(mono_fonts_), nullptr);
+        std::fill(std::begin(mono_font_scales_), std::end(mono_font_scales_), 0.0f);
 
         const auto& t = theme();
-        try {
-            const auto regular_path = lfs::vis::getAssetPath("fonts/" + t.fonts.regular_path);
-            const auto bold_path = lfs::vis::getAssetPath("fonts/" + t.fonts.bold_path);
-            const auto japanese_path = lfs::vis::getAssetPath("fonts/NotoSansJP-Regular.ttf");
-            const auto korean_path = lfs::vis::getAssetPath("fonts/NotoSansKR-Regular.ttf");
-
-            const auto is_font_valid = [](const std::filesystem::path& path) -> bool {
-                constexpr size_t MIN_FONT_FILE_SIZE = 100;
-                return std::filesystem::exists(path) && std::filesystem::file_size(path) >= MIN_FONT_FILE_SIZE;
-            };
-
-            const std::string lang =
-                lfs::event::LocalizationManager::getInstance().getCurrentLanguage();
-            const bool needs_jp_zh = (lang == "ja" || lang == "zh");
-            const bool needs_kr = (lang == "ko");
-
-            const auto load_font_latin_only =
-                [&](const std::filesystem::path& path, const float size) -> ImFont* {
-                if (!is_font_valid(path))
-                    return nullptr;
-                const std::string path_utf8 = lfs::core::path_to_utf8(path);
-                ImFontConfig config;
-                config.PixelSnapH = true;
-                return io.Fonts->AddFontFromFileTTF(path_utf8.c_str(), size, &config);
-            };
-
-            const auto merge_cjk = [&](const float size) {
-                if (needs_jp_zh && is_font_valid(japanese_path)) {
-                    ImFontConfig config;
-                    config.MergeMode = true;
-                    config.OversampleH = 1;
-                    config.PixelSnapH = true;
-                    const std::string japanese_path_utf8 = lfs::core::path_to_utf8(japanese_path);
-                    io.Fonts->AddFontFromFileTTF(japanese_path_utf8.c_str(), size, &config,
-                                                 io.Fonts->GetGlyphRangesJapanese());
-                    io.Fonts->AddFontFromFileTTF(japanese_path_utf8.c_str(), size, &config,
-                                                 io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-                }
-                if (needs_kr && is_font_valid(korean_path)) {
-                    ImFontConfig config;
-                    config.MergeMode = true;
-                    config.OversampleH = 1;
-                    config.PixelSnapH = true;
-                    const std::string korean_path_utf8 = lfs::core::path_to_utf8(korean_path);
-                    io.Fonts->AddFontFromFileTTF(korean_path_utf8.c_str(), size, &config,
-                                                 io.Fonts->GetGlyphRangesKorean());
-                }
-            };
-
-            const auto load_font_with_cjk =
-                [&](const std::filesystem::path& path, const float size) -> ImFont* {
-                ImFont* font = load_font_latin_only(path, size);
-                if (!font)
-                    return nullptr;
-                merge_cjk(size);
-                return font;
-            };
-
-            font_regular_ = load_font_with_cjk(regular_path, t.fonts.base_size * scale);
-            font_bold_ = load_font_with_cjk(bold_path, t.fonts.base_size * scale);
-            font_heading_ = load_font_with_cjk(bold_path, t.fonts.heading_size * scale);
-            font_small_ = load_font_with_cjk(regular_path, t.fonts.small_size * scale);
-            font_section_ = load_font_with_cjk(bold_path, t.fonts.section_size * scale);
-
-            const auto monospace_path = lfs::vis::getAssetPath("fonts/JetBrainsMono-Regular.ttf");
-            if (is_font_valid(monospace_path)) {
-                const std::string mono_path_utf8 = lfs::core::path_to_utf8(monospace_path);
-
-                static constexpr ImWchar GLYPH_RANGES[] = {
-                    0x0020,
-                    0x00FF,
-                    0x2190,
-                    0x21FF,
-                    0x2500,
-                    0x257F,
-                    0x2580,
-                    0x259F,
-                    0x25A0,
-                    0x25FF,
-                    0,
-                };
-
-                static constexpr float MONO_SCALES[] = {0.7f, 1.0f, 1.3f, 1.7f, 2.2f};
-                static_assert(std::size(MONO_SCALES) == FontSet::MONO_SIZE_COUNT);
-
-                for (int i = 0; i < FontSet::MONO_SIZE_COUNT; ++i) {
-                    ImFontConfig config;
-                    config.GlyphRanges = GLYPH_RANGES;
-                    config.PixelSnapH = true;
-                    const float size = t.fonts.base_size * scale * MONO_SCALES[i];
-                    mono_fonts_[i] = io.Fonts->AddFontFromFileTTF(mono_path_utf8.c_str(), size, &config);
-                    mono_font_scales_[i] = MONO_SCALES[i];
-                }
-                font_monospace_ = mono_fonts_[1];
-            }
-            if (!font_monospace_)
-                font_monospace_ = font_regular_;
-
-            const bool all_loaded = font_regular_ && font_bold_ && font_heading_ && font_small_ && font_section_;
-            if (!all_loaded) {
-                ImFont* const fallback = font_regular_ ? font_regular_ : io.Fonts->AddFontDefault();
-                if (!font_regular_)
-                    font_regular_ = fallback;
-                if (!font_bold_)
-                    font_bold_ = fallback;
-                if (!font_heading_)
-                    font_heading_ = fallback;
-                if (!font_small_)
-                    font_small_ = fallback;
-                if (!font_section_)
-                    font_section_ = fallback;
-            }
-        } catch (const std::exception& e) {
-            LOG_ERROR("Font loading failed: {}", e.what());
-            ImFont* const fallback = io.Fonts->AddFontDefault();
-            font_regular_ = font_bold_ = font_heading_ = font_small_ = font_section_ = fallback;
-        }
-
-        io.Fonts->TexMinWidth = 2048;
-        if (!io.Fonts->Build()) {
-            LOG_ERROR("Font atlas build failed — CJK glyphs may be missing");
-        }
-
-        // Bake an independent FreeType atlas for ScreenOverlayRenderer Text commands.
-        // Kept separate from ImGui's font atlas: the Vulkan branch has no ImGui renderer
-        // backend, and reaching into io.Fonts trips the new RendererHasTextures contract.
         try {
             const auto regular_path = lfs::vis::getAssetPath("fonts/" + t.fonts.regular_path);
             const float atlas_size_px = std::round(t.fonts.large_size * scale);
@@ -3107,90 +2966,7 @@ namespace lfs::vis::gui {
         LOG_INFO("UI scale applied: {:.2f}", scale);
     }
 
-    void GuiManager::loadImGuiSettings() {
-        if (imgui_ini_path_.empty())
-            return;
-
-        try {
-            if (!std::filesystem::exists(imgui_ini_path_))
-                return;
-
-            std::ifstream file;
-            if (!lfs::core::open_file_for_read(imgui_ini_path_, std::ios::binary, file)) {
-                LOG_WARN("Failed to open ImGui settings file: {}", lfs::core::path_to_utf8(imgui_ini_path_));
-                return;
-            }
-
-            const std::string ini_data((std::istreambuf_iterator<char>(file)),
-                                       std::istreambuf_iterator<char>());
-            ImGui::LoadIniSettingsFromMemory(ini_data.c_str(), ini_data.size());
-        } catch (const std::exception& e) {
-            LOG_WARN("Failed to load ImGui settings: {}", e.what());
-        } catch (...) {
-            LOG_WARN("Failed to load ImGui settings: unknown error");
-        }
-    }
-
-    void GuiManager::saveImGuiSettings() const {
-        if (imgui_ini_path_.empty() || !ImGui::GetCurrentContext())
-            return;
-
-        try {
-            std::filesystem::create_directories(imgui_ini_path_.parent_path());
-
-            size_t ini_size = 0;
-            const char* ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
-
-            std::ofstream file;
-            if (!lfs::core::open_file_for_write(imgui_ini_path_,
-                                                std::ios::binary | std::ios::trunc,
-                                                file)) {
-                LOG_WARN("Failed to open ImGui settings for writing: {}",
-                         lfs::core::path_to_utf8(imgui_ini_path_));
-                return;
-            }
-
-            file.write(ini_data, static_cast<std::streamsize>(ini_size));
-            if (!file) {
-                LOG_WARN("Failed to write ImGui settings: {}",
-                         lfs::core::path_to_utf8(imgui_ini_path_));
-            }
-        } catch (const std::exception& e) {
-            LOG_WARN("Failed to save ImGui settings: {}", e.what());
-        } catch (...) {
-            LOG_WARN("Failed to save ImGui settings: unknown error");
-        }
-    }
-
-    void GuiManager::persistImGuiSettingsIfNeeded() {
-        ImGuiIO& io = ImGui::GetIO();
-        if (!io.WantSaveIniSettings)
-            return;
-
-        saveImGuiSettings();
-        io.WantSaveIniSettings = false;
-    }
-
     void GuiManager::init() {
-        // ImGui initialization
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        ImPlot::CreateContext();
-
-        // Share ImGui state with Python module across DLL boundaries
-        ImGuiContext* const ctx = ImGui::GetCurrentContext();
-        lfs::python::set_imgui_context(ctx);
-
-        ImGuiMemAllocFunc alloc_fn{};
-        ImGuiMemFreeFunc free_fn{};
-        void* alloc_user_data{};
-        ImGui::GetAllocatorFunctions(&alloc_fn, &free_fn, &alloc_user_data);
-        lfs::python::set_imgui_allocator_functions(
-            reinterpret_cast<void*>(alloc_fn),
-            reinterpret_cast<void*>(free_fn),
-            alloc_user_data);
-        lfs::python::set_implot_context(ImPlot::GetCurrentContext());
-
         vulkan_gui_ = viewer_ && viewer_->getWindowManager() && viewer_->getWindowManager()->isVulkan();
 
         lfs::python::set_ui_texture_service(
@@ -3203,20 +2979,9 @@ namespace lfs::vis::gui {
                 return FALLBACK_MAX_TEXTURE_SIZE;
             });
 
-        ImGuiIO& io = ImGui::GetIO();
-        imgui_ini_path_ = LayoutState::getConfigDir() / "imgui.ini";
-        io.IniFilename = nullptr;
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
-        io.ConfigWindowsMoveFromTitleBarOnly = true;
-        io.ConfigDragClickToInputText = true;
-        loadImGuiSettings();
-
-        // Platform initialization. Vulkan rendering is handled by the app-owned passes below.
         auto* vulkan_context = viewer_->getWindowManager()->getVulkanContext();
-        if (!vulkan_context || !ImGui_ImplSDL3_InitForVulkan(viewer_->getWindow())) {
-            throw std::runtime_error("Failed to initialize ImGui SDL3 platform backend");
+        if (!vulkan_context) {
+            throw std::runtime_error("Failed to initialize Vulkan UI context");
         }
         setVulkanUiTextureContext(vulkan_context);
 
@@ -3324,10 +3089,12 @@ namespace lfs::vis::gui {
         };
         rml_right_panel_.on_splitter_delta = [this](float delta_y) {
             viewer_->getRenderingManager()->setViewportResizeActive(true);
-            const auto* mvp = ImGui::GetMainViewport();
+            int ww = 0;
+            int wh = 0;
+            SDL_GetWindowSize(viewer_->getWindow(), &ww, &wh);
             ScreenState ss;
-            ss.work_pos = {mvp->WorkPos.x, mvp->WorkPos.y};
-            ss.work_size = {mvp->WorkSize.x, mvp->WorkSize.y};
+            ss.work_pos = {0.0f, 0.0f};
+            ss.work_size = {static_cast<float>(ww), static_cast<float>(wh)};
             panel_layout_.adjustScenePanelRatio(delta_y, ss);
         };
         rml_right_panel_.on_splitter_end = [this]() {
@@ -3335,10 +3102,12 @@ namespace lfs::vis::gui {
         };
         rml_right_panel_.on_resize_delta = [this](float dx) {
             viewer_->getRenderingManager()->setViewportResizeActive(true);
-            const auto* mvp = ImGui::GetMainViewport();
+            int ww = 0;
+            int wh = 0;
+            SDL_GetWindowSize(viewer_->getWindow(), &ww, &wh);
             ScreenState ss;
-            ss.work_pos = {mvp->WorkPos.x, mvp->WorkPos.y};
-            ss.work_size = {mvp->WorkSize.x, mvp->WorkSize.y};
+            ss.work_pos = {0.0f, 0.0f};
+            ss.work_size = {static_cast<float>(ww), static_cast<float>(wh)};
             panel_layout_.applyResizeDelta(dx, ss);
         };
         rml_right_panel_.on_resize_end = [this]() {
@@ -3370,17 +3139,13 @@ namespace lfs::vis::gui {
         };
         ops.draw = [](void* host, const void* ctx) {
             auto* h = static_cast<RmlPanelHost*>(host);
-            float aw = ImGui::GetContentRegionAvail().x;
-            float ah = ImGui::GetContentRegionAvail().y;
-            ImVec2 pos = ImGui::GetCursorScreenPos();
-
             PanelInputState fallback;
             if (!h->hasInput() && s_frame_input) {
                 fallback = buildPanelInputFromSDL(*s_frame_input);
                 h->setInput(&fallback);
             }
             h->draw(*static_cast<const PanelDrawContext*>(ctx),
-                    aw, ah, pos.x, pos.y);
+                    0.0f, 0.0f, 0.0f, 0.0f);
             h->setInput(nullptr);
         };
         ops.draw_direct = [](void* host, float x, float y, float w, float h) {
@@ -3388,9 +3153,6 @@ namespace lfs::vis::gui {
             PanelInputState fallback;
             if (!hp->hasInput() && s_frame_input) {
                 fallback = buildPanelInputFromSDL(*s_frame_input);
-                auto* mvp = ImGui::GetMainViewport();
-                fallback.bg_draw_list = ImGui::GetForegroundDrawList(mvp);
-                fallback.fg_draw_list = ImGui::GetForegroundDrawList(mvp);
                 hp->setInput(&fallback);
             }
             hp->drawDirect(x, y, w, h);
@@ -3693,15 +3455,6 @@ namespace lfs::vis::gui {
     }
 
     bool GuiManager::shouldDeferDevResourceHotReload() const {
-        if (ImGui::GetCurrentContext()) {
-            const ImGuiIO& io = ImGui::GetIO();
-            if (io.WantTextInput || ImGui::IsAnyItemActive() ||
-                ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
-                ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
-                ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
-                return true;
-            }
-        }
         if (rmlui_manager_.wantsTextInput() || rmlui_manager_.anyItemActive())
             return true;
 
@@ -3801,13 +3554,6 @@ namespace lfs::vis::gui {
         resetVulkanSceneInterop();
         vulkan_scene_image_.reset();
         vulkan_viewport_pass_.reset();
-
-        if (ImGui::GetCurrentContext()) {
-            saveImGuiSettings();
-            ImGui_ImplSDL3_Shutdown();
-            ImPlot::DestroyContext();
-            ImGui::DestroyContext();
-        }
         vulkan_gui_ = false;
     }
 
@@ -4666,10 +4412,7 @@ namespace lfs::vis::gui {
         params.viewport_size = has_viewport_layout
                                    ? viewport_layout_.size
                                    : glm::vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
-        params.framebuffer_scale = {
-            ImGui::GetIO().DisplayFramebufferScale.x,
-            ImGui::GetIO().DisplayFramebufferScale.y,
-        };
+        params.framebuffer_scale = {1.0f, 1.0f};
 
         params.scene_image = vulkan_scene_image_;
         params.scene_image_size = vulkan_scene_image_size_;
@@ -4831,9 +4574,8 @@ namespace lfs::vis::gui {
 
         // Sample mouse pos with SDL_GetGlobalMouseState here, after all panel/tool overlay
         // queueing and just before the GPU command buffer is recorded. Global polling hits
-        // the OS directly. ImGui::GetMousePos and SDL_GetMouseState both return the cached
-        // NewFrame-aligned value, so without this the cursor ring lags an extra event-pump
-        // behind the hardware pointer.
+        // the OS directly, so the cursor ring tracks the hardware pointer without waiting
+        // for another event-pump tick.
         if (viewer_ && !ui_hidden_ && !guiFocusState().want_capture_mouse) {
             if (auto* const sel = viewer_->getSelectionTool(); sel && sel->isEnabled()) {
                 SDL_Window* const window = viewer_->getWindow();
@@ -5245,72 +4987,6 @@ namespace lfs::vis::gui {
         return std::chrono::steady_clock::now() < interactive_transition_guard_until_;
     }
 
-    bool GuiManager::shouldUseCachedImGuiResizeFrame(
-        const WindowManager* const window_manager,
-        const VulkanContext* const vulkan_context) const {
-#if defined(__linux__)
-        // The cached platform frame is a Windows manual-resize optimization. On
-        // X11, SDL's live platform frame keeps ImGui in sync with exposed pixels.
-        (void)window_manager;
-        (void)vulkan_context;
-        return false;
-#else
-        if (!window_manager || !vulkan_context) {
-            return false;
-        }
-
-        const glm::ivec2 window_size = window_manager->getWindowSize();
-        const glm::ivec2 framebuffer_size = window_manager->getFramebufferSize();
-        const bool active_window_resize =
-            vulkan_context->hasPendingSwapchainResize() ||
-            window_manager->hasRecentWindowSizeChange(kCachedImGuiResizeFrameWindow);
-        return active_window_resize &&
-               window_size.x > 0 && window_size.y > 0 &&
-               framebuffer_size.x > 0 && framebuffer_size.y > 0;
-#endif
-    }
-
-    void GuiManager::beginImGuiPlatformFrame(WindowManager* const window_manager,
-                                             VulkanContext* const vulkan_context) {
-        const auto now = std::chrono::steady_clock::now();
-        const auto update_delta_time = [&]() -> float {
-            if (last_imgui_platform_frame_time_ == std::chrono::steady_clock::time_point{}) {
-                last_imgui_platform_frame_time_ = now;
-                return 1.0f / 60.0f;
-            }
-
-            const auto elapsed = std::chrono::duration<float>(now - last_imgui_platform_frame_time_).count();
-            last_imgui_platform_frame_time_ = now;
-            return std::clamp(elapsed, 1.0f / 240.0f, 1.0f / 15.0f);
-        };
-
-        if (shouldUseCachedImGuiResizeFrame(window_manager, vulkan_context)) {
-            ImGuiIO& io = ImGui::GetIO();
-            const glm::ivec2 window_size = window_manager->getWindowSize();
-            const glm::ivec2 framebuffer_size = window_manager->getFramebufferSize();
-            io.DisplaySize = ImVec2(static_cast<float>(window_size.x),
-                                    static_cast<float>(window_size.y));
-            io.DisplayFramebufferScale = ImVec2(
-                static_cast<float>(framebuffer_size.x) / static_cast<float>(window_size.x),
-                static_cast<float>(framebuffer_size.y) / static_cast<float>(window_size.y));
-            io.DeltaTime = update_delta_time();
-            ++cached_imgui_resize_frame_count_;
-            used_cached_imgui_resize_frame_ = true;
-            return;
-        }
-
-        ImGui_ImplSDL3_NewFrame();
-        if (used_cached_imgui_resize_frame_) {
-            ImGui::GetIO().DeltaTime = update_delta_time();
-            used_cached_imgui_resize_frame_ = false;
-            LOG_PERF("gui_render.imgui_newFrame_cached_resize frames={}",
-                     cached_imgui_resize_frame_count_);
-            cached_imgui_resize_frame_count_ = 0;
-        } else {
-            last_imgui_platform_frame_time_ = now;
-        }
-    }
-
     void GuiManager::render() {
         auto* window_manager = viewer_ ? viewer_->getWindowManager() : nullptr;
         auto* vulkan_context = (vulkan_gui_ && window_manager) ? window_manager->getVulkanContext() : nullptr;
@@ -5352,26 +5028,15 @@ namespace lfs::vis::gui {
             input_controller->getBindings().updateCapture();
         }
 
-        // Start frame
-        {
-            LOG_TIMER_THRESHOLD("gui_render.imgui_newFrame", 0.25);
-            beginImGuiPlatformFrame(window_manager, vulkan_context);
-            if (auto* input_controller = viewer_->getInputController())
-                input_controller->applySplitterCursorOverride();
-            rmlui_manager_.clearVulkanQueue();
-        }
+        if (auto* input_controller = viewer_->getInputController())
+            input_controller->applySplitterCursorOverride();
+        rmlui_manager_.clearVulkanQueue();
         const auto& sdl_input = viewer_->getWindowManager()->frameInput();
         if (auto* input_controller = viewer_->getInputController()) {
             capturePressedKeysForRebinding(*input_controller, sdl_input);
         }
 
-        // Check mouse state before ImGui::NewFrame() updates WantCaptureMouse
         const bool mouse_in_viewport = isPositionInViewport(sdl_input.mouse_x, sdl_input.mouse_y);
-
-        {
-            LOG_TIMER_THRESHOLD("gui_render.imgui_NewFrame_call", 0.25);
-            ImGui::NewFrame();
-        }
 
         std::optional<::lfs::core::ScopedTimer> panel_setup_timer;
         panel_setup_timer.emplace("gui_render.panel_setup",
@@ -5382,14 +5047,9 @@ namespace lfs::vis::gui {
             LOG_TIMER_THRESHOLD("gui_render.panel_setup.focus_state", 0.25);
             auto& focus = guiFocusState();
             focus.reset();
-            // Seed from ImGui only; RmlUi panels populate their own claims during
-            // processInput. Aggregating wantsCaptureMouse() here reads stale hover
-            // state from the previous frame, which becomes self-perpetuating once a
-            // panel sets a hover element — toolbar tools then cannot be activated.
-            const ImGuiIO& io = ImGui::GetIO();
-            focus.want_capture_mouse = io.WantCaptureMouse;
-            focus.want_capture_keyboard = io.WantCaptureKeyboard || rmlui_manager_.wantsCaptureKeyboard();
-            focus.want_text_input = io.WantTextInput || rmlui_manager_.wantsTextInput();
+            focus.want_capture_mouse = false;
+            focus.want_capture_keyboard = rmlui_manager_.wantsCaptureKeyboard();
+            focus.want_text_input = rmlui_manager_.wantsTextInput();
         }
         const bool startup_plugin_preload_running = python::is_plugin_preload_running();
 
@@ -5413,14 +5073,13 @@ namespace lfs::vis::gui {
             context_menu_open = global_context_menu_ && global_context_menu_->isOpen();
             block_underlay_input = block_underlay_input || modal_overlay_open || modal_overlay_pending || context_menu_open;
 
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+            if (std::find(sdl_input.keys_pressed.begin(), sdl_input.keys_pressed.end(), SDL_SCANCODE_ESCAPE) != sdl_input.keys_pressed.end()) {
                 auto* console_state = panels::PythonConsoleState::tryGetInstance();
                 auto* editor = console_state ? console_state->getEditor() : nullptr;
                 const bool editor_owns_escape =
                     editor && (editor->isFocused() || editor->hasActiveCompletion());
                 if (!editor_owns_escape) {
                     widgets::RequestActiveEditCancel();
-                    ImGui::ClearActiveID();
                     if (editor != nullptr) {
                         editor->unfocus();
                     }
@@ -5496,22 +5155,11 @@ namespace lfs::vis::gui {
                 menu_labels_synced_ = true;
             }
 
-            // Reserve work area for the RML menu bar via ImGui's internal inset mechanism
-            {
-                auto* vp = static_cast<ImGuiViewportP*>(ImGui::GetMainViewport());
-                float bar_h = rml_menu_bar_.barHeight();
-                vp->BuildWorkInsetMin.y = ImMax(vp->BuildWorkInsetMin.y, bar_h);
-                vp->WorkInsetMin.y = ImMax(vp->WorkInsetMin.y, bar_h);
-                vp->UpdateWorkRect();
-            }
-
             PanelInputState menu_input = buildPanelInputFromSDL(sdl_input);
-            if (const ImGuiViewport* const main_viewport = ImGui::GetMainViewport()) {
-                menu_input.screen_x = main_viewport->Pos.x;
-                menu_input.screen_y = main_viewport->Pos.y;
-                menu_input.screen_w = static_cast<int>(main_viewport->Size.x);
-                menu_input.screen_h = static_cast<int>(main_viewport->Size.y);
-            }
+            menu_input.screen_x = 0.0f;
+            menu_input.screen_y = 0.0f;
+            menu_input.screen_w = sdl_input.window_w;
+            menu_input.screen_h = sdl_input.window_h;
             if (block_underlay_input)
                 menu_input = maskInputForBlockedUi(std::move(menu_input));
 
@@ -5568,36 +5216,37 @@ namespace lfs::vis::gui {
 
         if (!ui_hidden_) {
             LOG_TIMER_THRESHOLD("gui_render.panel_setup.shell_frame", 0.25);
-            const auto* mvp = ImGui::GetMainViewport();
             const float status_bar_h = PanelLayoutManager::STATUS_BAR_HEIGHT * current_ui_scale_;
-            const float panel_h = mvp->WorkSize.y - status_bar_h;
+            const float screen_w = static_cast<float>(sdl_input.window_w);
+            const float screen_h = static_cast<float>(sdl_input.window_h);
+            const float menu_h = rml_menu_bar_.barHeight();
+            const float panel_y = menu_h;
+            const float panel_h = std::max(0.0f, screen_h - menu_h - status_bar_h);
             panel_layout_.enforceWidthConstraints(show_main_panel_, ui_hidden_,
                                                   {
-                                                      .work_pos = {mvp->WorkPos.x, mvp->WorkPos.y},
-                                                      .work_size = {mvp->WorkSize.x, mvp->WorkSize.y},
-                                                      .any_item_active = ImGui::IsAnyItemActive() ||
-                                                                         rmlui_manager_.anyItemActive(),
+                                                      .work_pos = {0.0f, panel_y},
+                                                      .work_size = {screen_w, panel_h},
+                                                      .any_item_active = rmlui_manager_.anyItemActive(),
                                                   });
 
             ShellRegions shell_regions;
-            shell_regions.screen = {mvp->Pos.x, mvp->Pos.y, mvp->Size.x, mvp->Size.y};
-            shell_regions.menu = {mvp->Pos.x, mvp->Pos.y,
-                                  mvp->Size.x, mvp->WorkPos.y - mvp->Pos.y};
+            shell_regions.screen = {0.0f, 0.0f, screen_w, screen_h};
+            shell_regions.menu = {0.0f, 0.0f, screen_w, menu_h};
 
             if (show_main_panel_) {
                 const float rpw = panel_layout_.getRightPanelWidth();
                 shell_regions.right_panel = {
-                    mvp->WorkPos.x + mvp->WorkSize.x - rpw,
-                    mvp->WorkPos.y,
+                    screen_w - rpw,
+                    panel_y,
                     rpw,
                     panel_h,
                 };
             }
 
             shell_regions.status = {
-                mvp->WorkPos.x,
-                mvp->WorkPos.y + mvp->WorkSize.y - status_bar_h,
-                mvp->WorkSize.x,
+                0.0f,
+                screen_h - status_bar_h,
+                screen_w,
                 status_bar_h,
             };
 
@@ -5672,13 +5321,12 @@ namespace lfs::vis::gui {
             reg.preload_panels(PanelSpace::SidePanel, draw_ctx);
         }
 
-        auto* mvp_input = ImGui::GetMainViewport();
         s_frame_input = &sdl_input;
         PanelInputState panel_input = frame_input;
-        panel_input.screen_x = mvp_input->Pos.x;
-        panel_input.screen_y = mvp_input->Pos.y;
-        panel_input.bg_draw_list = ImGui::GetBackgroundDrawList(mvp_input);
-        panel_input.fg_draw_list = ImGui::GetForegroundDrawList(mvp_input);
+        panel_input.screen_x = 0.0f;
+        panel_input.screen_y = 0.0f;
+        panel_input.screen_w = sdl_input.window_w;
+        panel_input.screen_h = sdl_input.window_h;
         PanelInputState raw_panel_input = panel_input;
         if (block_underlay_input)
             panel_input = maskInputForBlockedUi(std::move(panel_input));
@@ -5688,9 +5336,14 @@ namespace lfs::vis::gui {
         ScreenState screen;
         {
             LOG_TIMER_THRESHOLD("gui_render.panel_setup.panel_input_state", 0.25);
-            screen.work_pos = {mvp_input->WorkPos.x, mvp_input->WorkPos.y};
-            screen.work_size = {mvp_input->WorkSize.x, mvp_input->WorkSize.y};
-            screen.any_item_active = ImGui::IsAnyItemActive() || rmlui_manager_.anyItemActive();
+            const float menu_h = rml_menu_bar_.barHeight();
+            const float status_h = PanelLayoutManager::STATUS_BAR_HEIGHT * current_ui_scale_;
+            screen.work_pos = {0.0f, menu_h};
+            screen.work_size = {
+                static_cast<float>(sdl_input.window_w),
+                std::max(0.0f, static_cast<float>(sdl_input.window_h) - menu_h - status_h),
+            };
+            screen.any_item_active = rmlui_manager_.anyItemActive();
         }
         panel_layout_.enforceWidthConstraints(show_main_panel_, ui_hidden_, screen);
         viewport_layout_ = panel_layout_.computeViewportLayout(
@@ -6057,8 +5710,18 @@ namespace lfs::vis::gui {
 
         auto apply_cursor = [](CursorRequest req) {
             switch (req) {
-            case CursorRequest::ResizeEW: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); break;
-            case CursorRequest::ResizeNS: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS); break;
+            case CursorRequest::ResizeEW: {
+                static SDL_Cursor* const cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
+                if (cursor)
+                    SDL_SetCursor(cursor);
+                break;
+            }
+            case CursorRequest::ResizeNS: {
+                static SDL_Cursor* const cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
+                if (cursor)
+                    SDL_SetCursor(cursor);
+                break;
+            }
             default: break;
             }
         };
@@ -6267,7 +5930,6 @@ namespace lfs::vis::gui {
         }
 
         PanelInputState floating_input = panel_input;
-        floating_input.bg_draw_list = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
         panel_setup_timer.reset();
         if (has_floating_panels) {
             LOG_TIMER_THRESHOLD("gui_render.draw_panels.Floating", 0.25);
@@ -6333,12 +5995,9 @@ namespace lfs::vis::gui {
             viewer_->getWindowManager() &&
             viewer_->getWindowManager()->manualResizeEdgeMask() != 0;
         if (!window_resize_active) {
-            if (ImGui::GetMouseCursor() == ImGuiMouseCursor_Arrow)
-                applyRmlCursorRequest(rmlui_manager_.consumeCursorRequest());
+            applyRmlCursorRequest(rmlui_manager_.consumeCursorRequest());
             apply_cursor(rml_right_panel_.getCursorRequest());
             apply_cursor(panel_layout_.getCursorRequest());
-            if (SDL_Cursor* const cursor = systemCursorForImGuiCursor(ImGui::GetMouseCursor()))
-                SDL_SetCursor(cursor);
             if (auto* input_controller = viewer_->getInputController())
                 input_controller->applySplitterCursorOverride();
         } else if (auto* const wm = viewer_->getWindowManager()) {
@@ -6372,17 +6031,8 @@ namespace lfs::vis::gui {
             }
         }
 
-        // Was ImGui::Render(): the resulting ImDrawData was never submitted (no
-        // ImGui_ImplVulkan_RenderDrawData consumer), so building it was pure CPU waste.
-        // We still call EndFrame to keep the per-frame state machine balanced for the
-        // panels that exercise ImGui internally (py_ui, ui_widgets, theme, etc.).
-        {
-            LOG_TIMER_THRESHOLD("gui_render.imgui_EndFrame", 0.25);
-            ImGui::EndFrame();
-        }
-
         if (vulkan_gui_) {
-            guiFocusState().any_item_active |= ImGui::IsAnyItemActive() || rmlui_manager_.anyItemActive();
+            guiFocusState().any_item_active |= rmlui_manager_.anyItemActive();
 
             const auto& bg = lfs::vis::theme().menu_background();
             VkClearValue clear_value{};
@@ -6475,7 +6125,6 @@ namespace lfs::vis::gui {
             if (!ui_layout_changed && ui_layout_settle_frames_ > 0)
                 --ui_layout_settle_frames_;
 
-            persistImGuiSettingsIfNeeded();
             updateInteractiveTransitionGuard();
             return;
         }
@@ -6528,10 +6177,10 @@ namespace lfs::vis::gui {
             if (!overlay || !overlay->isFrameActive()) {
                 return;
             }
-            const auto toCol = [](const ImVec4& c, float a) {
+            const auto toCol = [](const ThemeColor& c, float a) {
                 return lfs::rendering::OverlayColor{c.x, c.y, c.z, a};
             };
-            const auto toCol4 = [](const ImVec4& c) {
+            const auto toCol4 = [](const ThemeColor& c) {
                 return lfs::rendering::OverlayColor{c.x, c.y, c.z, c.w};
             };
             const glm::ivec2 rendered_size = rm ? rm->getRenderedSize() : glm::ivec2(0);
@@ -6844,43 +6493,7 @@ namespace lfs::vis::gui {
 
     void GuiManager::renderViewportDecorations() {
         if (!ui_hidden_ && viewport_layout_.size.x > 0 && viewport_layout_.size.y > 0) {
-            const auto& t = theme();
-            const float r = t.viewport.corner_radius;
-            if (r > 0.0f) {
-                auto* const dl = ImGui::GetBackgroundDrawList();
-                const ImU32 bg = toU32(t.menu_background());
-                const float x1 = viewport_layout_.pos.x, y1 = viewport_layout_.pos.y;
-                const float x2 = x1 + viewport_layout_.size.x, y2 = y1 + viewport_layout_.size.y;
-
-                constexpr int CORNER_ARC_SEGMENTS = 12;
-                const auto maskCorner = [&](const ImVec2 corner, const ImVec2 edge,
-                                            const ImVec2 center, const float a0, const float a1) {
-                    dl->PathLineTo(corner);
-                    dl->PathLineTo(edge);
-                    dl->PathArcTo(center, r, a0, a1, CORNER_ARC_SEGMENTS);
-                    dl->PathLineTo(corner);
-                    dl->PathFillConvex(bg);
-                };
-                maskCorner({x1, y1}, {x1, y1 + r}, {x1 + r, y1 + r}, IM_PI, IM_PI * 1.5f);
-                maskCorner({x2, y1}, {x2 - r, y1}, {x2 - r, y1 + r}, IM_PI * 1.5f, IM_PI * 2.0f);
-                maskCorner({x1, y2}, {x1 + r, y2}, {x1 + r, y2 - r}, IM_PI * 0.5f, IM_PI);
-                maskCorner({x2, y2}, {x2, y2 - r}, {x2 - r, y2 - r}, 0.0f, IM_PI * 0.5f);
-
-                if (show_main_panel_) {
-                    const float rpw = panel_layout_.getRightPanelWidth();
-                    auto* mvp = ImGui::GetMainViewport();
-                    const float px = mvp->WorkPos.x + mvp->WorkSize.x - rpw;
-                    const float py1 = mvp->WorkPos.y;
-                    const float py2 = py1 + mvp->WorkSize.y - PanelLayoutManager::STATUS_BAR_HEIGHT * current_ui_scale_;
-                    maskCorner({px, py1}, {px, py1 + r}, {px + r, py1 + r}, IM_PI, IM_PI * 1.5f);
-                    maskCorner({px, py2}, {px + r, py2}, {px + r, py2 - r}, IM_PI * 0.5f, IM_PI);
-                }
-
-                if (t.viewport.border_size > 0.0f) {
-                    dl->AddRect({x1, y1}, {x2, y2}, t.viewport_border_u32(), r,
-                                ImDrawFlags_RoundCornersAll, t.viewport.border_size);
-                }
-            }
+            (void)theme();
         }
     }
 
@@ -6891,23 +6504,20 @@ namespace lfs::vis::gui {
 
         auto& focus = guiFocusState();
         const bool any_popup_or_modal_open =
-            ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) ||
             isModalWindowOpen() ||
             (global_context_menu_ && global_context_menu_->isOpen());
-        const bool imgui_wants_input = focus.want_text_input || focus.want_capture_keyboard;
+        const bool ui_wants_input = focus.want_text_input || focus.want_capture_keyboard;
 
         if (isTransformGizmoOverOrUsing() && !any_popup_or_modal_open) {
             focus.want_capture_mouse = false;
             focus.want_capture_keyboard = false;
         }
 
-        if (mouse_in_viewport && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
-            !any_popup_or_modal_open && !imgui_wants_input) {
+        if (mouse_in_viewport && !any_popup_or_modal_open && !ui_wants_input) {
             if (input.mouse_down[1] || input.mouse_down[2]) {
                 focus.want_capture_mouse = false;
             }
             if (input.mouse_clicked[0] || input.mouse_clicked[1]) {
-                ImGui::ClearActiveID();
                 focus.want_capture_keyboard = false;
                 auto* console_state = panels::PythonConsoleState::tryGetInstance();
                 if (console_state != nullptr) {
@@ -6923,8 +6533,7 @@ namespace lfs::vis::gui {
         if (rendering_manager) {
             const auto& settings = rendering_manager->getSettings();
             if (settings.point_cloud_mode && mouse_in_viewport &&
-                !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
-                !any_popup_or_modal_open && !imgui_wants_input) {
+                !any_popup_or_modal_open && !ui_wants_input) {
                 focus.want_capture_mouse = false;
                 focus.want_capture_keyboard = false;
             }
@@ -6973,10 +6582,6 @@ namespace lfs::vis::gui {
         }
 
         if (sequencer_ui_.blocksPointer(x, y) || rml_viewport_overlay_.blocksPointer(x, y)) {
-            return {.blocks_pointer = true, .takes_keyboard_focus = true};
-        }
-
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
             return {.blocks_pointer = true, .takes_keyboard_focus = true};
         }
 
@@ -7188,8 +6793,7 @@ namespace lfs::vis::gui {
     }
 
     bool GuiManager::isModalWindowOpen() const {
-        return ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) ||
-               rml_modal_overlay_->isOpen();
+        return rml_modal_overlay_->isOpen();
     }
 
     bool GuiManager::passiveMouseMoveNeedsRender(const float mouse_x, const float mouse_y) const {
@@ -7198,9 +6802,8 @@ namespace lfs::vis::gui {
         if (ui_hidden_)
             return false;
 
-        const bool imgui_popup_open =
-            ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-        if (isCapturingInput() || imgui_popup_open || startup_overlay_.isVisible() || drag_drop_hovering_) {
+        const bool ui_popup_open = global_context_menu_ && global_context_menu_->isOpen();
+        if (isCapturingInput() || ui_popup_open || startup_overlay_.isVisible() || drag_drop_hovering_) {
             return true;
         }
 
@@ -7322,8 +6925,14 @@ namespace lfs::vis::gui {
             return;
         }
 
-        const ImGuiViewport* const mvp = ImGui::GetMainViewport();
-        if (!mvp || mvp->WorkSize.x <= 0.0f || mvp->WorkSize.y <= 0.0f) {
+        int window_w = 0;
+        int window_h = 0;
+        if (viewer_ && viewer_->getWindow()) {
+            SDL_GetWindowSize(viewer_->getWindow(), &window_w, &window_h);
+        }
+        const float work_w = static_cast<float>(window_w);
+        const float work_h = static_cast<float>(window_h);
+        if (work_w <= 0.0f || work_h <= 0.0f) {
             return;
         }
 
@@ -7359,13 +6968,13 @@ namespace lfs::vis::gui {
         PanelInputState input;
         input.mouse_x = -1.0e9f;
         input.mouse_y = -1.0e9f;
-        input.screen_x = mvp->Pos.x;
-        input.screen_y = mvp->Pos.y;
-        input.screen_w = static_cast<int>(mvp->Size.x);
-        input.screen_h = static_cast<int>(mvp->Size.y);
+        input.screen_x = 0.0f;
+        input.screen_y = 0.0f;
+        input.screen_w = window_w;
+        input.screen_h = window_h;
 
         const float dpi = lfs::python::get_shared_dpi_scale();
-        const float panel_h = mvp->WorkSize.y - PanelLayoutManager::STATUS_BAR_HEIGHT * dpi;
+        const float panel_h = work_h - PanelLayoutManager::STATUS_BAR_HEIGHT * dpi;
         if (panel_h <= 0.0f) {
             return;
         }
@@ -7383,7 +6992,7 @@ namespace lfs::vis::gui {
         const float scene_h =
             std::max(80.0f * dpi,
                      avail_h * panel_layout_.getScenePanelRatio() - splitter_h * 0.5f);
-        const float content_top = mvp->WorkPos.y + kPanelPad;
+        const float content_top = kPanelPad;
         const float tab_content_y = content_top + scene_h + splitter_h + tab_bar_h;
         const float tab_content_h =
             std::max(0.0f, content_top + avail_h - tab_content_y);

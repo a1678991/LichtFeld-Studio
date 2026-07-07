@@ -2939,7 +2939,7 @@ namespace lfs::vis::gui {
         return viewer_->getEditorContext().getActiveTool();
     }
 
-    void GizmoManager::openPieMenu(ImVec2 cursor_pos) {
+    void GizmoManager::openPieMenu(glm::vec2 cursor_pos) {
         pie_menu_.updateItems(viewer_->getEditorContext());
         pie_menu_.open(cursor_pos);
     }
@@ -2953,11 +2953,11 @@ namespace lfs::vis::gui {
         handlePieMenuSelection();
     }
 
-    void GizmoManager::onPieMenuMouseMove(ImVec2 pos) {
+    void GizmoManager::onPieMenuMouseMove(glm::vec2 pos) {
         pie_menu_.onMouseMove(pos);
     }
 
-    void GizmoManager::onPieMenuClick(ImVec2 pos) {
+    void GizmoManager::onPieMenuClick(glm::vec2 pos) {
         pie_menu_.onMouseClick(pos);
         handlePieMenuSelection();
     }
@@ -2966,8 +2966,12 @@ namespace lfs::vis::gui {
         if (!pie_menu_.isOpen())
             return;
 
-        auto* drawlist = ImGui::GetForegroundDrawList();
-        pie_menu_.draw(drawlist);
+        auto* const rm = viewer_ ? viewer_->getRenderingManager() : nullptr;
+        auto* const overlay = rm ? rm->getScreenOverlayRenderer() : nullptr;
+        if (!overlay || !overlay->isFrameActive())
+            return;
+
+        pie_menu_.draw(*overlay);
     }
 
     void GizmoManager::handlePieMenuSelection() {

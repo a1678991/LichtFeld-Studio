@@ -6,7 +6,7 @@ Sub-layouts structure UI elements within panels using composable containers. Eac
 
 ### Row
 
-Places children horizontally with `ImGui::SameLine()` between them.
+Places children horizontally with `horizontal layout` between them.
 
 ```python
 with layout.row() as row:
@@ -17,7 +17,7 @@ with layout.row() as row:
 
 ### Column
 
-Standard vertical stacking (default ImGui behavior). Useful for applying state to a group of widgets.
+Standard vertical stacking (default vertical layout behavior). Useful for applying state to a group of widgets.
 
 ```python
 with layout.column() as col:

@@ -141,20 +141,11 @@ namespace lfs::python {
         std::once_flag g_redirect_once;
         std::atomic<bool> g_plugins_loaded{false};
 
-        // ImGui state shared across DLL boundaries (set once during init, read from render thread)
-        void* g_imgui_context{nullptr};
-        void* g_imgui_alloc_fn{nullptr};
-        void* g_imgui_free_fn{nullptr};
-        void* g_imgui_alloc_user_data{nullptr};
-
         constexpr float DEFAULT_DPI_SCALE{1.0f};
 
         CreateTextureFn g_create_texture{nullptr};
         DeleteTextureFn g_delete_texture{nullptr};
         MaxTextureSizeFn g_max_texture_size_fn{nullptr};
-
-        void* g_implot_context{nullptr};
-
         void* g_view_context_state{nullptr};
         float g_shared_dpi_scale{DEFAULT_DPI_SCALE};
         void* g_rml_manager{nullptr};
@@ -675,26 +666,6 @@ namespace lfs::python {
     void mark_plugins_loaded() { g_plugins_loaded.store(true, std::memory_order_release); }
     bool are_plugins_loaded() { return g_plugins_loaded.load(std::memory_order_acquire); }
 
-    void set_imgui_context(void* ctx) {
-        g_imgui_context = ctx;
-    }
-
-    void* get_imgui_context() {
-        return g_imgui_context;
-    }
-
-    void set_imgui_allocator_functions(void* alloc_func, void* free_func, void* user_data) {
-        g_imgui_alloc_fn = alloc_func;
-        g_imgui_free_fn = free_func;
-        g_imgui_alloc_user_data = user_data;
-    }
-
-    void get_imgui_allocator_functions(void** alloc_func, void** free_func, void** user_data) {
-        *alloc_func = g_imgui_alloc_fn;
-        *free_func = g_imgui_free_fn;
-        *user_data = g_imgui_alloc_user_data;
-    }
-
     void set_ui_texture_service(const CreateTextureFn create, const DeleteTextureFn del, const MaxTextureSizeFn max_size) {
         assert(create && del && max_size);
         g_create_texture = create;
@@ -718,9 +689,6 @@ namespace lfs::python {
         assert(g_max_texture_size_fn);
         return g_max_texture_size_fn();
     }
-
-    void set_implot_context(void* ctx) { g_implot_context = ctx; }
-    void* get_implot_context() { return g_implot_context; }
 
     void set_view_context_state(void* state) {
         g_view_context_state = state;

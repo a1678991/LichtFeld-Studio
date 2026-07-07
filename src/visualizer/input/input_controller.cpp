@@ -38,7 +38,6 @@
 #include <cmath>
 #include <format>
 #include <limits>
-#include <imgui.h>
 
 namespace lfs::vis {
 
@@ -407,10 +406,6 @@ namespace lfs::vis {
             std::fill(std::begin(keys_movement_), std::end(keys_movement_), false);
             clearWasdMomentumViewport();
             hovered_camera_id_ = -1;
-
-            // Clear ImGui input to prevent tooltip trails
-            ImGui::GetIO().ClearInputKeys();
-            ImGui::GetIO().ClearInputMouse();
         });
     }
 

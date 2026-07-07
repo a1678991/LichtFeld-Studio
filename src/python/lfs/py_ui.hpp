@@ -255,7 +255,7 @@ namespace lfs::python {
         // Tablet support (defaults to 1.0 for mouse)
         float pressure = 1.0f;
 
-        // GUI state - true if mouse is over ImGui window
+        // GUI state - true if mouse is over an application UI surface
         bool over_gui = false;
 
         // Raw key code for KEY events
@@ -311,7 +311,7 @@ namespace lfs::python {
     // Get the current application context
     PyAppContext get_app_context();
 
-    // UI layout object passed to draw() - wraps ImGui calls
+    // UI layout object passed to draw() for legacy Python plugin compatibility.
     class PyUILayout {
     public:
         explicit PyUILayout(int initial_menu_depth = 0) : menu_depth_(initial_menu_depth) {}
@@ -477,7 +477,7 @@ namespace lfs::python {
         void begin_disabled(bool disabled = true);
         void end_disabled();
 
-        // Images (texture_id is an opaque ImGui backend texture handle as uint64)
+        // Images (texture_id is an opaque UI texture handle as uint64)
         void image(uint64_t texture_id, std::tuple<float, float> size,
                    nb::object tint = nb::none());
         void image_uv(uint64_t texture_id, std::tuple<float, float> size,
@@ -952,5 +952,7 @@ namespace lfs::python {
     void register_ui_panels(nb::module_& m);
     void register_rml_im_mode_layout(nb::module_& m);
     void register_keymap(nb::module_& m);
+
+    [[nodiscard]] std::string rml_src_for_dynamic_texture(uint64_t texture_id, int width, int height);
 
 } // namespace lfs::python

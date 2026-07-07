@@ -28,9 +28,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
-#include <imgui_internal.h>
 #include <utility>
-#include <imgui.h>
 
 #ifdef _WIN32
 #include <shellapi.h>
@@ -703,11 +701,8 @@ namespace lfs::vis::gui {
         if (input_event_forwarded || (refresh_cache && !updated_this_frame))
             rml_context_->Update();
 
-        const auto* main_viewport = ImGui::GetMainViewport();
-        const float screen_x = main_viewport ? main_viewport->Pos.x : 0.0f;
-        const float screen_y = main_viewport ? main_viewport->Pos.y : 0.0f;
-        const float offset_x = viewport.pos.x - screen_x;
-        const float offset_y = viewport.pos.y - screen_y;
+        const float offset_x = viewport.pos.x;
+        const float offset_y = viewport.pos.y;
         rml_manager_->trackContextFrame(rml_context_,
                                         static_cast<int>(offset_x),
                                         static_cast<int>(offset_y));

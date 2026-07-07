@@ -20,15 +20,6 @@
     "freetype",
     "glm",
     "gtest",
-    {
-      "name": "imgui",
-      "features": [
-        "docking-experimental",
-        "freetype",
-        "sdl3-binding"
-      ]
-    },
-    "implot",
     "libarchive",
     "libdeflate",
     "libwebp",
@@ -124,14 +115,6 @@
     {
       "name": "gtest",
       "version": "1.17.0#2"
-    },
-    {
-      "name": "imgui",
-      "version": "1.92.6"
-    },
-    {
-      "name": "implot",
-      "version": "0.17"
     },
     {
       "name": "libarchive",
