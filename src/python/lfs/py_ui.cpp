@@ -553,27 +553,27 @@ namespace lfs::python {
         };
 
         enum class PyKey {
-            ESCAPE,
-            ENTER,
-            TAB,
-            BACKSPACE,
-            DELETE_KEY,
-            SPACE,
-            LEFT,
-            RIGHT,
-            UP,
-            DOWN,
-            HOME,
-            END,
-            F,
-            I,
-            M,
-            R,
-            T,
-            KEY_1,
-            MINUS,
-            EQUAL,
-            F2,
+            ESCAPE = 526,
+            ENTER = 525,
+            TAB = 512,
+            BACKSPACE = 523,
+            DELETE_KEY = 522,
+            SPACE = 524,
+            LEFT = 513,
+            RIGHT = 514,
+            UP = 515,
+            DOWN = 516,
+            HOME = 519,
+            END = 520,
+            F = 551,
+            I = 554,
+            M = 558,
+            R = 563,
+            T = 565,
+            KEY_1 = 537,
+            MINUS = 598,
+            EQUAL = 602,
+            F2 = 573,
         };
 
         // Image texture preload cache for Python image preview
@@ -1700,7 +1700,8 @@ namespace lfs::python {
             if (nb::hasattr(data, prop_id.c_str())) {
                 nb::object collection = data.attr(prop_id.c_str());
                 if (nb::hasattr(collection, "__iter__")) {
-                    for (auto /*item*/ : collection) {
+                    for (auto item : collection) {
+                        (void)item;
                         ++item_count;
                     }
                 }
