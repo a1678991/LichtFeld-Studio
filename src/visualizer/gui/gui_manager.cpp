@@ -6968,6 +6968,11 @@ namespace lfs::vis::gui {
             return {.blocks_pointer = true, .takes_keyboard_focus = true};
         }
 
+        if (rmlui_manager_.activeOverlayContainsPoint(static_cast<float>(x),
+                                                      static_cast<float>(y))) {
+            return {.blocks_pointer = true, .takes_keyboard_focus = true};
+        }
+
         if (panel_layout_.isResizingPanel() || isPositionOverFloatingPanel(x, y)) {
             return {.blocks_pointer = true, .takes_keyboard_focus = true};
         }
@@ -7213,6 +7218,10 @@ namespace lfs::vis::gui {
         return rmlui_manager_.passiveMouseMoveNeedsRender(mouse_x, mouse_y);
     }
 
+    std::optional<double> GuiManager::secondsUntilTooltipReveal() const {
+        return rmlui_manager_.secondsUntilTooltipReveal();
+    }
+
     void GuiManager::captureKey(int physical_key, int logical_key, int mods) {
         if (auto* input_controller = viewer_->getInputController()) {
             input_controller->getBindings().captureKey(physical_key, logical_key, mods);
@@ -7417,6 +7426,8 @@ namespace lfs::vis::gui {
         if (isVramHudPublishDue(now))
             return true;
         if (rml_viewport_overlay_.needsAnimationFrame())
+            return true;
+        if (rml_menu_bar_.needsAnimationFrame())
             return true;
         if (rml_right_panel_.needsAnimationFrame())
             return true;

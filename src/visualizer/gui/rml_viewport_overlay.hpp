@@ -96,7 +96,7 @@ namespace lfs::vis::gui {
         void processInput(const PanelInputState& input);
         bool wantsInput() const { return wants_input_; }
         [[nodiscard]] bool needsAnimationFrame() const {
-            return render_needed_ || document_sync_dirty_ || animation_active_ || tooltip_.needsFrame() ||
+            return render_needed_ || document_sync_dirty_ || animation_active_ || tooltip_.revealDue() ||
                    (vram_hud_ && vram_hud_->needsAnimationFrame());
         }
         [[nodiscard]] bool blocksPointer(double screen_x, double screen_y) const;
