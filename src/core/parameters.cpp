@@ -201,8 +201,7 @@ namespace lfs::core {
                 return "GUT and igs+ strategy cannot be used together";
             if (ppisp_freeze_from_sidecar && !use_ppisp)
                 return "PPISP sidecar freeze requires PPISP enabled";
-            if (depth_loss_mode != "ssi" && depth_loss_mode != "ssi-disparity" && depth_loss_mode != "ssi-depth" &&
-                depth_loss_mode != "pearson" && depth_loss_mode != "adaptive-warped-l1")
+            if (depth_loss_mode != "ssi" && depth_loss_mode != "ssi-disparity" && depth_loss_mode != "ssi-depth")
                 return "depth_loss_mode must be 'ssi', 'ssi-disparity', or 'ssi-depth'";
             if (normal_loss_space != "auto" &&
                 normal_loss_space != "camera-opencv" &&
@@ -535,9 +534,6 @@ namespace lfs::core {
             }
             if (json.contains("depth_loss_mode")) {
                 params.depth_loss_mode = json["depth_loss_mode"];
-                if (params.depth_loss_mode == "pearson" || params.depth_loss_mode == "adaptive-warped-l1") {
-                    params.depth_loss_mode = "ssi";
-                }
             }
             if (json.contains("use_normal_loss")) {
                 params.use_normal_loss = json["use_normal_loss"];

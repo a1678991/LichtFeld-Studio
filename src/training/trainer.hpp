@@ -462,6 +462,8 @@ namespace lfs::training {
         core::Tensor normal_consistency_scalar_;
         core::Tensor normal_consistency_partials_;
         core::Tensor normal_consistency_residual_;
+        core::Tensor normal_prior_depth_scalar_;
+        core::Tensor normal_prior_depth_residual_;
         // Dataset-level normal-prior convention, resolved once at startup
         bool normal_prior_flip_yz_ = false;
         bool normal_prior_world_space_ = false;

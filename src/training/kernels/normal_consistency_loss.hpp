@@ -62,4 +62,27 @@ namespace lfs::training::kernels {
         float weight,
         cudaStream_t stream = nullptr);
 
+    // Prior-supervised depth normals: alpha-weighted cosine between the prior
+    // normal map and the normal derived from rendered expected depth. Gradients
+    // flow only through n_depth into grad_depth_accum / grad_alpha.
+    // All grad buffers must be pre-initialized; this kernel accumulates.
+    // residual_map (optional) receives 0.5 * (1 - cos) per active pixel.
+    void launch_normal_prior_depth_loss(
+        const float* prior_normal,         // [3*H*W] CHW prior normals
+        const float* rendered_depth_accum, // [H*W] accumulated depth
+        const float* rendered_alpha,       // [H*W]
+        float* grad_depth_accum,           // [H*W], accumulated into
+        float* grad_alpha,                 // [H*W], accumulated into
+        float* residual_map,               // [H*W] or nullptr, written
+        float* loss_out,                   // [1], written
+        float* partial_sums,               // [normal_consistency_partial_count(num_pixels)]
+        int width,
+        int height,
+        float fx,
+        float fy,
+        float cx,
+        float cy,
+        float weight,
+        cudaStream_t stream = nullptr);
+
 } // namespace lfs::training::kernels

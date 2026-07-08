@@ -18,22 +18,16 @@ namespace lfs::training::kernels {
     // Final/diagnostic slots at the front of the partials buffer.
     namespace depth_loss_slots {
         constexpr int kValid = 0;
-        constexpr int kModel = 1; // 0 = disparity-space fit, 1 = depth-space fit
+        constexpr int kModel = 1; // 0 = disparity-space anchor, 1 = depth-space anchor
         constexpr int kScale = 2;
         constexpr int kShift = 3;
         constexpr int kFloor = 4;
         constexpr int kInvNorm = 5;
         constexpr int kSumAlpha = 6;
         constexpr int kCount = 7;
-        constexpr int kCorrDisparity = 8;
-        constexpr int kCorrDepth = 9;
-        constexpr int kMeanExpectedDepth = 10;
-        constexpr int kSigmaP = 11;
-        constexpr int kMeanTarget = 12;
-        constexpr int kVarTarget = 13;
-        constexpr int kScaleDepthModel = 14;
-        constexpr int kShiftDepthModel = 15;
-        constexpr int kSlotCount = 16;
+        constexpr int kMeanExpectedDepth = 8;
+        constexpr int kSigmaP = 9;
+        constexpr int kSlotCount = 10;
     } // namespace depth_loss_slots
 
     // Softening floor for depth inversion, as a fraction of the weighted mean
@@ -41,16 +35,14 @@ namespace lfs::training::kernels {
     // alignment fit and the gradients.
     constexpr float kDepthLossFloorFraction = 0.05f;
     constexpr float kDepthLossMinAlpha = 1.0e-3f;
+    // Geman-McClure influence peaks at |r| ~ 1.15*sigma and decays beyond; bounded influence replaces validity gates.
+    constexpr float kDepthLossResidualScale = 2.0f;
     // Ridge term on the prior variance in the affine fits. Near the 8-bit
     // quantization noise floor the slope shrinks toward zero.
     constexpr float kDepthLossTargetVarRidge = 1.5e-5f;
     // Below this prior variance the prior is considered flat and is rejected for
     // anchored supervision. A constant target has no geometry signal.
     constexpr float kDepthLossFlatPriorVar = 4.0f * kDepthLossTargetVarRidge;
-    // Unanchored (render-fitted) alignment is rejected below this correlation:
-    // fitting the prior onto an uncorrelated render only injects noise.
-    constexpr float kDepthLossMinSelfFitCorr = 0.20f;
-
     struct DepthAnchorCandidate {
         bool valid = false;
         float scale = 0.0f;
@@ -121,16 +113,13 @@ namespace lfs::training::kernels {
     [[nodiscard]] size_t depth_loss_partial_count(size_t num_pixels);
 
     // Scale-and-shift-invariant depth supervision on alpha-normalized expected
-    // depth in inverse-depth space: per-image weighted least-squares affine
-    // alignment of the monocular prior (disparity- or depth-convention, chosen
-    // by |correlation| in Auto mode), sigma-normalized L1 plus a
-    // gradient-alignment term. Emits gradients w.r.t. both the accumulated
-    // depth map and the alpha map.
-    // error_map_out (optional, may be null): per-pixel |residual|/sigma clamped
-    // to [0,1] — a densification signal for regions whose depth disagrees with
-    // the prior. Zeroed when the loss is inactive.
-    // anchor (optional, may be null): fixed per-camera alignment; when valid it
-    // replaces the per-iteration self-fit against the render.
+    // depth in inverse-depth space using a fixed per-camera anchor alignment.
+    // The loss is alpha-weighted Geman-McClure plus a gradient-alignment term.
+    // Emits gradients w.r.t. both the accumulated depth map and the alpha map.
+    // error_map_out (optional, may be null): per-pixel 2*rho residual in [0,1),
+    // zeroed when the loss is inactive.
+    // anchor: fixed per-camera alignment; invalid or null anchors disable the
+    // loss for the image.
     // prior_quantization_step: quantization step of the prior in target units
     // (1/255 for 8-bit priors, 1/65535 for 16-bit, 0 for float). Residuals and
     // gradient-alignment differences inside the quantizer's half-step corridor
@@ -149,7 +138,6 @@ namespace lfs::training::kernels {
         int height,
         float weight,
         float gradient_term_weight,
-        DepthPriorType prior,
         float prior_quantization_step = 0.0f,
         const DepthAnchor* anchor = nullptr,
         cudaStream_t stream = nullptr);

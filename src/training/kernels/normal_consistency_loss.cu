@@ -61,23 +61,19 @@ namespace lfs::training::kernels {
         }
 
         // Neighbor order: +x, -x, +y, -y.
-        struct ConsistencySample {
+        struct DepthNormalSample {
             bool active;
             float alpha;
-            float cos;
             float sign;
             float nraw_norm;
-            float nr_norm;
             float3 nd;
-            float3 nr_hat;
             float3 tx;
             float3 ty;
             float neighbor_e[4];
             float neighbor_alpha[4];
         };
 
-        __device__ ConsistencySample load_sample(
-            const float* __restrict__ rendered_normal,
+        __device__ DepthNormalSample load_depth_normal_sample(
             const float* __restrict__ depth_accum,
             const float* __restrict__ alpha_map,
             const Intrinsics k,
@@ -86,7 +82,7 @@ namespace lfs::training::kernels {
             const int width,
             const int height,
             const size_t num_pixels) {
-            ConsistencySample s = {};
+            DepthNormalSample s = {};
 
             if (x <= 0 || y <= 0 || x >= width - 1 || y >= height - 1) {
                 return s;
@@ -108,17 +104,6 @@ namespace lfs::training::kernels {
                 if (fabsf(s.neighbor_e[i] - e_c) > jump_limit) {
                     return s;
                 }
-            }
-
-            const float nx = rendered_normal[idx];
-            const float ny = rendered_normal[num_pixels + idx];
-            const float nz = rendered_normal[2 * num_pixels + idx];
-            if (!isfinite(nx) || !isfinite(ny) || !isfinite(nz)) {
-                return s;
-            }
-            const float nr_norm = sqrtf(nx * nx + ny * ny + nz * nz);
-            if (nr_norm < kNormalLossMinRenderNorm) {
-                return s;
             }
 
             const float3 ray_xp = pixel_ray(k, x + 1, y);
@@ -150,18 +135,126 @@ namespace lfs::training::kernels {
 
             const float nraw_norm = sqrtf(nraw_norm_sq);
             const float nd_rcp = sign / nraw_norm;
-            const float nr_rcp = 1.0f / nr_norm;
             s.nd = make_float3(n_raw.x * nd_rcp, n_raw.y * nd_rcp, n_raw.z * nd_rcp);
-            s.nr_hat = make_float3(nx * nr_rcp, ny * nr_rcp, nz * nr_rcp);
-            s.cos = s.nd.x * s.nr_hat.x + s.nd.y * s.nr_hat.y + s.nd.z * s.nr_hat.z;
             s.sign = sign;
             s.nraw_norm = nraw_norm;
-            s.nr_norm = nr_norm;
             s.tx = tx;
             s.ty = ty;
             s.alpha = a_c;
             s.active = true;
             return s;
+        }
+
+        struct ConsistencySample {
+            bool active;
+            float alpha;
+            float cos;
+            float sign;
+            float nraw_norm;
+            float nr_norm;
+            float3 nd;
+            float3 nr_hat;
+            float3 tx;
+            float3 ty;
+            float neighbor_e[4];
+            float neighbor_alpha[4];
+        };
+
+        __device__ ConsistencySample load_sample(
+            const float* __restrict__ rendered_normal,
+            const float* __restrict__ depth_accum,
+            const float* __restrict__ alpha_map,
+            const Intrinsics k,
+            const int x,
+            const int y,
+            const int width,
+            const int height,
+            const size_t num_pixels) {
+            ConsistencySample s = {};
+            const DepthNormalSample d = load_depth_normal_sample(
+                depth_accum, alpha_map, k, x, y, width, height, num_pixels);
+            if (!d.active) {
+                return s;
+            }
+            const size_t idx = static_cast<size_t>(y) * width + x;
+            const float nx = rendered_normal[idx];
+            const float ny = rendered_normal[num_pixels + idx];
+            const float nz = rendered_normal[2 * num_pixels + idx];
+            if (!isfinite(nx) || !isfinite(ny) || !isfinite(nz)) {
+                return s;
+            }
+            const float nr_norm = sqrtf(nx * nx + ny * ny + nz * nz);
+            if (nr_norm < kNormalLossMinRenderNorm) {
+                return s;
+            }
+
+            const float nr_rcp = 1.0f / nr_norm;
+            s.nr_hat = make_float3(nx * nr_rcp, ny * nr_rcp, nz * nr_rcp);
+            s.cos = d.nd.x * s.nr_hat.x + d.nd.y * s.nr_hat.y + d.nd.z * s.nr_hat.z;
+            s.active = true;
+            s.alpha = d.alpha;
+            s.sign = d.sign;
+            s.nraw_norm = d.nraw_norm;
+            s.nr_norm = nr_norm;
+            s.nd = d.nd;
+            s.tx = d.tx;
+            s.ty = d.ty;
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                s.neighbor_e[i] = d.neighbor_e[i];
+                s.neighbor_alpha[i] = d.neighbor_alpha[i];
+            }
+            return s;
+        }
+
+        template <typename Sample>
+        __device__ void accumulate_depth_normal_backward(
+            const Sample& s,
+            const float3 target_hat,
+            const float cos,
+            const float g_w,
+            const Intrinsics k,
+            const int x,
+            const int y,
+            const int width,
+            float* __restrict__ grad_depth_accum,
+            float* __restrict__ grad_alpha) {
+            // d(1 - cos)/dn_raw = -sign * (target_hat - cos * n_d) / |n_raw|
+            const float nraw_scale = -g_w * s.sign / s.nraw_norm;
+            const float3 g_raw = make_float3(
+                nraw_scale * (target_hat.x - cos * s.nd.x),
+                nraw_scale * (target_hat.y - cos * s.nd.y),
+                nraw_scale * (target_hat.z - cos * s.nd.z));
+
+            // n_raw = tx x ty: grad_tx = ty x g_raw, grad_ty = g_raw x tx
+            const float3 g_tx = make_float3(
+                s.ty.y * g_raw.z - s.ty.z * g_raw.y,
+                s.ty.z * g_raw.x - s.ty.x * g_raw.z,
+                s.ty.x * g_raw.y - s.ty.y * g_raw.x);
+            const float3 g_ty = make_float3(
+                g_raw.y * s.tx.z - g_raw.z * s.tx.y,
+                g_raw.z * s.tx.x - g_raw.x * s.tx.z,
+                g_raw.x * s.tx.y - g_raw.y * s.tx.x);
+
+            // tx = E_xp*r_xp - E_xm*r_xm, ty = E_yp*r_yp - E_ym*r_ym
+            const float3 ray_xp = pixel_ray(k, x + 1, y);
+            const float3 ray_xm = pixel_ray(k, x - 1, y);
+            const float3 ray_yp = pixel_ray(k, x, y + 1);
+            const float3 ray_ym = pixel_ray(k, x, y - 1);
+            const float g_e[4] = {
+                g_tx.x * ray_xp.x + g_tx.y * ray_xp.y + g_tx.z * ray_xp.z,
+                -(g_tx.x * ray_xm.x + g_tx.y * ray_xm.y + g_tx.z * ray_xm.z),
+                g_ty.x * ray_yp.x + g_ty.y * ray_yp.y + g_ty.z * ray_yp.z,
+                -(g_ty.x * ray_ym.x + g_ty.y * ray_ym.y + g_ty.z * ray_ym.z)};
+
+            const size_t idx = static_cast<size_t>(y) * width + x;
+            const size_t neighbor_idx[4] = {idx + 1, idx - 1, idx + width, idx - width};
+            for (int i = 0; i < 4; ++i) {
+                // E = max(accum, 0)/alpha: dE/daccum = 1/alpha, dE/dalpha = -E/alpha
+                const float inv_a = 1.0f / s.neighbor_alpha[i];
+                atomicAdd(&grad_depth_accum[neighbor_idx[i]], g_e[i] * inv_a);
+                atomicAdd(&grad_alpha[neighbor_idx[i]], -g_e[i] * s.neighbor_e[i] * inv_a);
+            }
         }
 
         // Sequential block reductions share warp_reduce's static shared buffer;
@@ -295,41 +388,128 @@ namespace lfs::training::kernels {
                 grad_normal[num_pixels + idx] += nr_scale * (s.nd.y - s.cos * s.nr_hat.y);
                 grad_normal[2 * num_pixels + idx] += nr_scale * (s.nd.z - s.cos * s.nr_hat.z);
 
-                // d(1 - cos)/dn_raw = -sign * (n_hat - cos * n_d) / |n_raw|
-                const float nraw_scale = -g_w * s.sign / s.nraw_norm;
-                const float3 g_raw = make_float3(
-                    nraw_scale * (s.nr_hat.x - s.cos * s.nd.x),
-                    nraw_scale * (s.nr_hat.y - s.cos * s.nd.y),
-                    nraw_scale * (s.nr_hat.z - s.cos * s.nd.z));
+                accumulate_depth_normal_backward(
+                    s, s.nr_hat, s.cos, g_w, k, x, y, width, grad_depth_accum, grad_alpha);
+            }
+            reduce_and_store(sums, block_partials, num_blocks);
+        }
 
-                // n_raw = tx x ty: grad_tx = ty x g_raw, grad_ty = g_raw x tx
-                const float3 g_tx = make_float3(
-                    s.ty.y * g_raw.z - s.ty.z * g_raw.y,
-                    s.ty.z * g_raw.x - s.ty.x * g_raw.z,
-                    s.ty.x * g_raw.y - s.ty.y * g_raw.x);
-                const float3 g_ty = make_float3(
-                    g_raw.y * s.tx.z - g_raw.z * s.tx.y,
-                    g_raw.z * s.tx.x - g_raw.x * s.tx.z,
-                    g_raw.x * s.tx.y - g_raw.y * s.tx.x);
+        __device__ __forceinline__ bool prior_normal_at(
+            const float* __restrict__ prior_normal,
+            const size_t idx,
+            const size_t num_pixels,
+            float3& prior_hat) {
+            const float nx = prior_normal[idx];
+            const float ny = prior_normal[num_pixels + idx];
+            const float nz = prior_normal[2 * num_pixels + idx];
+            if (!isfinite(nx) || !isfinite(ny) || !isfinite(nz)) {
+                return false;
+            }
+            const float norm = sqrtf(nx * nx + ny * ny + nz * nz);
+            if (norm < kNormalLossMinPriorNorm) {
+                return false;
+            }
+            const float inv_norm = 1.0f / norm;
+            prior_hat = make_float3(nx * inv_norm, ny * inv_norm, nz * inv_norm);
+            return true;
+        }
 
-                // tx = E_xp*r_xp - E_xm*r_xm, ty = E_yp*r_yp - E_ym*r_ym
-                const float3 ray_xp = pixel_ray(k, x + 1, y);
-                const float3 ray_xm = pixel_ray(k, x - 1, y);
-                const float3 ray_yp = pixel_ray(k, x, y + 1);
-                const float3 ray_ym = pixel_ray(k, x, y - 1);
-                const float g_e[4] = {
-                    g_tx.x * ray_xp.x + g_tx.y * ray_xp.y + g_tx.z * ray_xp.z,
-                    -(g_tx.x * ray_xm.x + g_tx.y * ray_xm.y + g_tx.z * ray_xm.z),
-                    g_ty.x * ray_yp.x + g_ty.y * ray_yp.y + g_ty.z * ray_yp.z,
-                    -(g_ty.x * ray_ym.x + g_ty.y * ray_ym.y + g_ty.z * ray_ym.z)};
+        __global__ void prior_depth_stats_kernel(
+            const float* __restrict__ prior_normal,
+            const float* __restrict__ depth_accum,
+            const float* __restrict__ alpha_map,
+            double* __restrict__ block_partials,
+            const Intrinsics k,
+            const int width,
+            const int height,
+            const int num_blocks) {
 
-                const size_t neighbor_idx[4] = {idx + 1, idx - 1, idx + width, idx - width};
-                for (int i = 0; i < 4; ++i) {
-                    // E = max(accum, 0)/alpha: dE/daccum = 1/alpha, dE/dalpha = -E/alpha
-                    const float inv_a = 1.0f / s.neighbor_alpha[i];
-                    atomicAdd(&grad_depth_accum[neighbor_idx[i]], g_e[i] * inv_a);
-                    atomicAdd(&grad_alpha[neighbor_idx[i]], -g_e[i] * s.neighbor_e[i] * inv_a);
+            const size_t num_pixels = static_cast<size_t>(width) * height;
+            double sums[kStatCount] = {};
+            for (size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+                 idx < num_pixels;
+                 idx += static_cast<size_t>(blockDim.x) * gridDim.x) {
+                const int x = static_cast<int>(idx % width);
+                const int y = static_cast<int>(idx / width);
+                const DepthNormalSample s = load_depth_normal_sample(
+                    depth_accum, alpha_map, k, x, y, width, height, num_pixels);
+                float3 prior_hat;
+                if (!s.active || !prior_normal_at(prior_normal, idx, num_pixels, prior_hat)) {
+                    continue;
                 }
+                const float cos = s.nd.x * prior_hat.x + s.nd.y * prior_hat.y + s.nd.z * prior_hat.z;
+                sums[0] += s.alpha;
+                sums[1] += 1.0;
+                sums[2] += static_cast<double>(s.alpha) * cos;
+            }
+            reduce_and_store(sums, block_partials, num_blocks);
+        }
+
+        __global__ void prior_depth_finalize_stats_kernel(
+            const double* __restrict__ block_partials,
+            float* __restrict__ finals,
+            const int num_blocks,
+            const float weight) {
+
+            double sums[kStatCount] = {};
+            reduce_block_partials(block_partials, sums, num_blocks);
+            if (threadIdx.x != 0) {
+                return;
+            }
+
+            const double sum_alpha = sums[0];
+            const double count = sums[1];
+            const bool valid = sum_alpha > 0.0;
+
+            finals[slots::kValid] = valid ? 1.0f : 0.0f;
+            finals[slots::kSumAlpha] = static_cast<float>(sum_alpha);
+            finals[slots::kCount] = static_cast<float>(count);
+            finals[slots::kMeanCos] = sum_alpha > 0.0 ? static_cast<float>(sums[2] / sum_alpha) : 0.0f;
+            finals[slots::kInvNorm] = valid ? static_cast<float>(weight / fmax(sum_alpha, 1.0)) : 0.0f;
+        }
+
+        __global__ void prior_depth_grad_kernel(
+            const float* __restrict__ prior_normal,
+            const float* __restrict__ depth_accum,
+            const float* __restrict__ alpha_map,
+            float* __restrict__ grad_depth_accum,
+            float* __restrict__ grad_alpha,
+            float* __restrict__ residual_map,
+            const float* __restrict__ finals,
+            double* __restrict__ block_partials,
+            const Intrinsics k,
+            const int width,
+            const int height,
+            const int num_blocks) {
+
+            const float inv_norm = finals[slots::kInvNorm];
+            const size_t num_pixels = static_cast<size_t>(width) * height;
+
+            double sums[kLossStatCount] = {};
+            for (size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+                 idx < num_pixels;
+                 idx += static_cast<size_t>(blockDim.x) * gridDim.x) {
+                const int x = static_cast<int>(idx % width);
+                const int y = static_cast<int>(idx / width);
+                const DepthNormalSample s = load_depth_normal_sample(
+                    depth_accum, alpha_map, k, x, y, width, height, num_pixels);
+                float3 prior_hat;
+                const bool active = s.active && prior_normal_at(prior_normal, idx, num_pixels, prior_hat);
+                float cos = 0.0f;
+                if (active) {
+                    cos = s.nd.x * prior_hat.x + s.nd.y * prior_hat.y + s.nd.z * prior_hat.z;
+                }
+                if (residual_map) {
+                    residual_map[idx] = active ? 0.5f * (1.0f - cos) : 0.0f;
+                }
+                if (!active || inv_norm == 0.0f) {
+                    continue;
+                }
+
+                sums[0] += static_cast<double>(s.alpha) * (1.0 - cos);
+                const float g_w = inv_norm * s.alpha;
+                accumulate_depth_normal_backward(
+                    s, prior_hat, cos, g_w, k, x, y, width, grad_depth_accum, grad_alpha);
             }
             reduce_and_store(sums, block_partials, num_blocks);
         }
@@ -400,6 +580,65 @@ namespace lfs::training::kernels {
             rendered_depth_accum,
             rendered_alpha,
             grad_normal,
+            grad_depth_accum,
+            grad_alpha,
+            residual_map,
+            finals,
+            block_partials,
+            k,
+            width,
+            height,
+            num_blocks);
+        consistency_finalize_loss_kernel<<<1, kThreadsPerBlock, 0, stream>>>(
+            block_partials,
+            finals,
+            loss_out,
+            num_blocks);
+    }
+
+    void launch_normal_prior_depth_loss(
+        const float* prior_normal,
+        const float* rendered_depth_accum,
+        const float* rendered_alpha,
+        float* grad_depth_accum,
+        float* grad_alpha,
+        float* residual_map,
+        float* loss_out,
+        float* partial_sums,
+        const int width,
+        const int height,
+        const float fx,
+        const float fy,
+        const float cx,
+        const float cy,
+        const float weight,
+        cudaStream_t stream) {
+        stream = resolve_stream(stream);
+
+        const size_t num_pixels = static_cast<size_t>(width) * height;
+        const int num_blocks = static_cast<int>(consistency_block_count(num_pixels));
+        float* finals = partial_sums;
+        double* block_partials = reinterpret_cast<double*>(partial_sums + slots::kSlotCount);
+        const Intrinsics k{fx, fy, cx, cy};
+
+        prior_depth_stats_kernel<<<num_blocks, kThreadsPerBlock, 0, stream>>>(
+            prior_normal,
+            rendered_depth_accum,
+            rendered_alpha,
+            block_partials,
+            k,
+            width,
+            height,
+            num_blocks);
+        prior_depth_finalize_stats_kernel<<<1, kThreadsPerBlock, 0, stream>>>(
+            block_partials,
+            finals,
+            num_blocks,
+            weight);
+        prior_depth_grad_kernel<<<num_blocks, kThreadsPerBlock, 0, stream>>>(
+            prior_normal,
+            rendered_depth_accum,
+            rendered_alpha,
             grad_depth_accum,
             grad_alpha,
             residual_map,

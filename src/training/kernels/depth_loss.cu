@@ -20,13 +20,11 @@ namespace lfs::training::kernels {
         constexpr int kThreadsPerBlock = 256;
         constexpr size_t kMaxBlocks = 1024;
 
-        constexpr float kMinValidCount = 64.0f;
-        constexpr float kMinValidWeight = 16.0f;
         constexpr float kMinFloorAbs = 1.0e-8f;
         constexpr double kMinVariance = 1.0e-20;
 
-        constexpr int kPrimaryStatCount = 7;
-        constexpr int kInverseStatCount = 3;
+        constexpr int kPrimaryStatCount = 3;
+        constexpr int kInverseStatCount = 2;
         constexpr int kLossStatCount = 2;
 
         [[nodiscard]] size_t depth_loss_block_count(const size_t num_pixels) {
@@ -35,6 +33,22 @@ namespace lfs::training::kernels {
 
         __device__ __forceinline__ float sign_of(const float v) {
             return v > 0.0f ? 1.0f : (v < 0.0f ? -1.0f : 0.0f);
+        }
+
+        __device__ __forceinline__ float robust_rho(const float x) {
+            const float x2 = x * x;
+            return 0.5f * x2 / (1.0f + x2);
+        }
+
+        __device__ __forceinline__ float robust_psi(const float x) {
+            const float x2 = x * x;
+            const float den = 1.0f + x2;
+            return x / (den * den);
+        }
+
+        __device__ __forceinline__ float deadband_signed_residual(const float r, const float delta) {
+            const float excess = fabsf(r) - delta;
+            return excess > 0.0f ? sign_of(r) * excess : 0.0f;
         }
 
         __device__ __forceinline__ bool pixel_active(
@@ -103,14 +117,9 @@ namespace lfs::training::kernels {
                 }
                 const double aw = a;
                 const double e = fmaxf(d_raw, 0.0f) / a;
-                const double td = t;
                 sums[0] += aw;
                 sums[1] += aw * e;
-                sums[2] += aw * e * e;
-                sums[3] += aw * td;
-                sums[4] += aw * td * td;
-                sums[5] += aw * td * e;
-                sums[6] += 1.0;
+                sums[2] += 1.0;
             }
             reduce_and_store(sums, block_partials, num_blocks);
         }
@@ -127,33 +136,9 @@ namespace lfs::training::kernels {
             }
 
             const double sum_alpha = sums[0];
-            const double count = sums[6];
-            bool valid = count >= kMinValidCount && sum_alpha >= kMinValidWeight;
-
-            double mean_e = 0.0;
-            double mean_t = 0.0;
-            double var_t = 0.0;
-            double var_e = 0.0;
-            double cov_te = 0.0;
-            if (valid) {
-                mean_e = sums[1] / sum_alpha;
-                mean_t = sums[3] / sum_alpha;
-                var_e = fmax(sums[2] / sum_alpha - mean_e * mean_e, 0.0);
-                var_t = fmax(sums[4] / sum_alpha - mean_t * mean_t, 0.0);
-                cov_te = sums[5] / sum_alpha - mean_t * mean_e;
-                valid = mean_e > 0.0;
-            }
-
-            double a_z = 0.0;
-            double b_z = 0.0;
-            double corr_z = 0.0;
-            if (valid) {
-                a_z = cov_te / (var_t + kDepthLossTargetVarRidge);
-                b_z = mean_e - a_z * mean_t;
-                if (var_e > kMinVariance && var_t > kMinVariance) {
-                    corr_z = cov_te / sqrt(var_t * var_e);
-                }
-            }
+            const double count = sums[2];
+            const bool valid = sum_alpha > 0.0;
+            const double mean_e = valid ? sums[1] / sum_alpha : 0.0;
 
             finals[slots::kValid] = valid ? 1.0f : 0.0f;
             finals[slots::kFloor] = fmaxf(kMinFloorAbs,
@@ -161,11 +146,6 @@ namespace lfs::training::kernels {
             finals[slots::kSumAlpha] = static_cast<float>(sum_alpha);
             finals[slots::kCount] = static_cast<float>(count);
             finals[slots::kMeanExpectedDepth] = static_cast<float>(mean_e);
-            finals[slots::kMeanTarget] = static_cast<float>(mean_t);
-            finals[slots::kVarTarget] = static_cast<float>(var_t);
-            finals[slots::kScaleDepthModel] = static_cast<float>(a_z);
-            finals[slots::kShiftDepthModel] = static_cast<float>(b_z);
-            finals[slots::kCorrDepth] = static_cast<float>(corr_z);
         }
 
         __global__ void depth_loss_stats_inverse_kernel(
@@ -197,7 +177,6 @@ namespace lfs::training::kernels {
                     const double aw = a;
                     sums[0] += aw * p;
                     sums[1] += aw * p * p;
-                    sums[2] += aw * static_cast<double>(t) * p;
                 }
             }
             reduce_and_store(sums, block_partials, num_blocks);
@@ -207,8 +186,6 @@ namespace lfs::training::kernels {
             const double* __restrict__ block_partials,
             float* __restrict__ finals,
             const int num_blocks,
-            const DepthPriorType prior,
-            const int use_anchor,
             const int anchor_model,
             const float anchor_scale,
             const float anchor_shift,
@@ -220,70 +197,31 @@ namespace lfs::training::kernels {
                 return;
             }
 
-            bool valid = finals[slots::kValid] > 0.5f;
+            bool valid = finals[slots::kValid] > 0.5f &&
+                         anchor_floor > 0.0f &&
+                         isfinite(anchor_scale) &&
+                         isfinite(anchor_shift);
             const double sum_alpha = finals[slots::kSumAlpha];
-            const double mean_t = finals[slots::kMeanTarget];
-            const double var_t = finals[slots::kVarTarget];
-            const double corr_z = finals[slots::kCorrDepth];
 
             double mean_p = 0.0;
             double var_p = 0.0;
-            double cov_tp = 0.0;
-            double corr_d = 0.0;
             double sigma_p = 0.0;
             if (valid) {
                 mean_p = sums[0] / sum_alpha;
                 var_p = fmax(sums[1] / sum_alpha - mean_p * mean_p, 0.0);
-                cov_tp = sums[2] / sum_alpha - mean_t * mean_p;
-                sigma_p = sqrt(var_p);
-                if (var_p <= kMinVariance) {
-                    valid = false;
-                } else if (var_t > kMinVariance) {
-                    corr_d = cov_tp / sqrt(var_t * var_p);
-                }
+                sigma_p = sqrt(fmax(var_p, kMinVariance));
             }
 
-            int model = 0;
-            double a = 0.0;
-            double b = 0.0;
-            if (use_anchor) {
-                model = anchor_model;
-                a = anchor_scale;
-                b = anchor_shift;
-                if (valid) {
-                    finals[slots::kFloor] = anchor_floor;
-                }
-            } else {
-                switch (prior) {
-                case DepthPriorType::Disparity: model = 0; break;
-                case DepthPriorType::Depth: model = 1; break;
-                case DepthPriorType::Auto:
-                default: model = fabs(corr_d) >= fabs(corr_z) ? 0 : 1; break;
-                }
-                if (valid) {
-                    if (model == 0) {
-                        a = cov_tp / (var_t + kDepthLossTargetVarRidge);
-                        b = mean_p - a * mean_t;
-                    } else {
-                        a = finals[slots::kScaleDepthModel];
-                        b = finals[slots::kShiftDepthModel];
-                    }
-                    // Fitting against the render is self-referential; without
-                    // correlation it only injects noise.
-                    const double selected_corr = model == 0 ? corr_d : corr_z;
-                    if (fabs(selected_corr) < kDepthLossMinSelfFitCorr) {
-                        valid = false;
-                    }
-                }
+            if (valid) {
+                finals[slots::kFloor] = anchor_floor;
             }
 
             finals[slots::kValid] = valid ? 1.0f : 0.0f;
-            finals[slots::kModel] = static_cast<float>(model);
-            finals[slots::kScale] = static_cast<float>(a);
-            finals[slots::kShift] = static_cast<float>(b);
+            finals[slots::kModel] = static_cast<float>(anchor_model);
+            finals[slots::kScale] = anchor_scale;
+            finals[slots::kShift] = anchor_shift;
             finals[slots::kSigmaP] = static_cast<float>(sigma_p);
-            finals[slots::kCorrDisparity] = static_cast<float>(corr_d);
-            finals[slots::kInvNorm] = valid ? static_cast<float>(1.0 / (sigma_p * sum_alpha)) : 0.0f;
+            finals[slots::kInvNorm] = valid ? static_cast<float>(1.0 / sum_alpha) : 0.0f;
         }
 
         struct PixelSample {
@@ -358,7 +296,8 @@ namespace lfs::training::kernels {
             const float floor_f = finals[slots::kFloor];
             const float inv_norm = finals[slots::kInvNorm];
             const float sigma_p = finals[slots::kSigmaP];
-            const float inv_sigma = valid && sigma_p > 0.0f ? 1.0f / sigma_p : 0.0f;
+            const float inv_scaled_sigma =
+                valid && sigma_p > 0.0f ? 1.0f / (kDepthLossResidualScale * sigma_p) : 0.0f;
             const float p_max = 1.0f / floor_f;
             const float half_step = 0.5f * quantization_step * fabsf(a);
             const size_t num_pixels = static_cast<size_t>(width) * height;
@@ -383,16 +322,20 @@ namespace lfs::training::kernels {
 
                 float gp = 0.0f;
                 if (error_map) {
-                    error_map[idx] = c.ok
-                                         ? fminf(fmaxf(fabsf(c.p - c.d) - c.delta, 0.0f) * inv_sigma, 1.0f)
-                                         : 0.0f;
+                    if (c.ok) {
+                        const float x_r =
+                            deadband_signed_residual(c.p - c.d, c.delta) * inv_scaled_sigma;
+                        error_map[idx] = (x_r * x_r) / (1.0f + x_r * x_r);
+                    } else {
+                        error_map[idx] = 0.0f;
+                    }
                 }
                 if (c.ok) {
-                    const float r = c.p - c.d;
-                    const float r_excess = fabsf(r) - c.delta;
-                    if (r_excess > 0.0f) {
-                        sums[0] += static_cast<double>(c.alpha) * r_excess;
-                        gp += c.alpha * sign_of(r);
+                    const float x_r =
+                        deadband_signed_residual(c.p - c.d, c.delta) * inv_scaled_sigma;
+                    if (x_r != 0.0f) {
+                        sums[0] += static_cast<double>(c.alpha) * robust_rho(x_r);
+                        gp += c.alpha * robust_psi(x_r) * inv_scaled_sigma;
                     }
 
                     if (x + 1 < width) {
@@ -401,11 +344,12 @@ namespace lfs::training::kernels {
                             model, a, b, floor_f, p_max, half_step);
                         if (n.ok) {
                             const float h = (n.p - c.p) - (n.d - c.d);
-                            const float h_excess = fabsf(h) - (c.delta + n.delta);
-                            if (h_excess > 0.0f) {
+                            const float x_h =
+                                deadband_signed_residual(h, c.delta + n.delta) * inv_scaled_sigma;
+                            if (x_h != 0.0f) {
                                 const float w2 = fminf(c.alpha, n.alpha);
-                                sums[1] += static_cast<double>(w2) * h_excess;
-                                gp -= lambda_grad * w2 * sign_of(h);
+                                sums[1] += static_cast<double>(w2) * robust_rho(x_h);
+                                gp -= lambda_grad * w2 * robust_psi(x_h) * inv_scaled_sigma;
                             }
                         }
                     }
@@ -415,11 +359,12 @@ namespace lfs::training::kernels {
                             model, a, b, floor_f, p_max, half_step);
                         if (n.ok) {
                             const float v = (n.p - c.p) - (n.d - c.d);
-                            const float v_excess = fabsf(v) - (c.delta + n.delta);
-                            if (v_excess > 0.0f) {
+                            const float x_v =
+                                deadband_signed_residual(v, c.delta + n.delta) * inv_scaled_sigma;
+                            if (x_v != 0.0f) {
                                 const float w2 = fminf(c.alpha, n.alpha);
-                                sums[1] += static_cast<double>(w2) * v_excess;
-                                gp -= lambda_grad * w2 * sign_of(v);
+                                sums[1] += static_cast<double>(w2) * robust_rho(x_v);
+                                gp -= lambda_grad * w2 * robust_psi(x_v) * inv_scaled_sigma;
                             }
                         }
                     }
@@ -429,9 +374,11 @@ namespace lfs::training::kernels {
                             model, a, b, floor_f, p_max, half_step);
                         if (n.ok) {
                             const float h = (c.p - n.p) - (c.d - n.d);
-                            if (fabsf(h) > c.delta + n.delta) {
+                            const float x_h =
+                                deadband_signed_residual(h, c.delta + n.delta) * inv_scaled_sigma;
+                            if (x_h != 0.0f) {
                                 const float w2 = fminf(n.alpha, c.alpha);
-                                gp += lambda_grad * w2 * sign_of(h);
+                                gp += lambda_grad * w2 * robust_psi(x_h) * inv_scaled_sigma;
                             }
                         }
                     }
@@ -441,9 +388,11 @@ namespace lfs::training::kernels {
                             model, a, b, floor_f, p_max, half_step);
                         if (n.ok) {
                             const float v = (c.p - n.p) - (c.d - n.d);
-                            if (fabsf(v) > c.delta + n.delta) {
+                            const float x_v =
+                                deadband_signed_residual(v, c.delta + n.delta) * inv_scaled_sigma;
+                            if (x_v != 0.0f) {
                                 const float w2 = fminf(n.alpha, c.alpha);
-                                gp += lambda_grad * w2 * sign_of(v);
+                                gp += lambda_grad * w2 * robust_psi(x_v) * inv_scaled_sigma;
                             }
                         }
                     }
@@ -868,7 +817,6 @@ namespace lfs::training::kernels {
         const int height,
         const float weight,
         const float gradient_term_weight,
-        const DepthPriorType prior,
         const float prior_quantization_step,
         const DepthAnchor* anchor,
         cudaStream_t stream) {
@@ -904,8 +852,6 @@ namespace lfs::training::kernels {
             block_partials,
             finals,
             num_blocks,
-            prior,
-            use_anchor ? 1 : 0,
             use_anchor ? anchor->model : 0,
             use_anchor ? anchor->scale : 0.0f,
             use_anchor ? anchor->shift : 0.0f,
