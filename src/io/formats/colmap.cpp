@@ -2088,6 +2088,12 @@ namespace lfs::io {
         const std::vector<Point3DData>& source_points,
         const PointCloud* point_cloud,
         const glm::mat4& point_cloud_transform) {
+        PointCloud compacted_point_cloud;
+        if (point_cloud && point_cloud->has_deleted()) {
+            compacted_point_cloud = lfs::core::remove_deleted_points(*point_cloud);
+            point_cloud = &compacted_point_cloud;
+        }
+
         if (!point_cloud || point_cloud->size() <= 0 || !point_cloud->means.is_valid()) {
             // No live scene point cloud (training replaced it with a splat
             // model, etc.) — fall back to the COLMAP source points, but still

@@ -57,6 +57,7 @@ set(CORE_SOURCES
         mapped_file.cpp
         parameters.cpp
         property_registry.cpp
+        point_cloud.cpp
         reactive_store.cpp
         scene.cpp
         splat_simplify.cpp

@@ -739,10 +739,10 @@ namespace lfs::io {
             __cpuid(cpuInfo, 7);
             has_avx2 = (cpuInfo[1] & (1 << 5)) != 0;
 #elif defined(__GNUC__) || defined(__clang__)
-            __builtin_cpu_init();
-            has_avx2 = __builtin_cpu_supports("avx2");
+                __builtin_cpu_init();
+                has_avx2 = __builtin_cpu_supports("avx2");
 #else
-            has_avx2 = false;
+                has_avx2 = false;
 #endif
         });
 
@@ -1483,6 +1483,51 @@ namespace lfs::io {
             return filtered;
         }
 
+        Result<std::vector<PlyAttributeBlock>> filter_extra_attributes_for_point_cloud_export(
+            const PointCloud& point_cloud,
+            const PointCloud& compacted_point_cloud,
+            const std::vector<PlyAttributeBlock>& extra_attributes,
+            const std::filesystem::path& output_path) {
+            if (extra_attributes.empty() || !point_cloud.has_deleted()) {
+                return extra_attributes;
+            }
+
+            auto keep_mask = point_cloud.deleted->logical_not();
+            const auto raw_count = static_cast<size_t>(point_cloud.size());
+            const auto visible_count = static_cast<size_t>(compacted_point_cloud.size());
+
+            std::vector<PlyAttributeBlock> filtered;
+            filtered.reserve(extra_attributes.size());
+
+            for (const auto& block : extra_attributes) {
+                if (auto result = validate_extra_attribute_tensor(block.values, output_path); !result) {
+                    return std::unexpected(result.error());
+                }
+
+                const auto rows = static_cast<size_t>(block.values.size(0));
+                if (rows == visible_count) {
+                    filtered.push_back(block);
+                    continue;
+                }
+
+                if (rows != raw_count) {
+                    return make_error(ErrorCode::INTERNAL_ERROR,
+                                      std::format("Extra PLY attribute row count {} must match either raw point count {} or visible point count {}",
+                                                  rows, raw_count, visible_count),
+                                      output_path);
+                }
+
+                auto mask = keep_mask.device() == block.values.device() ? keep_mask : keep_mask.to(block.values.device());
+
+                PlyAttributeBlock filtered_block;
+                filtered_block.values = block.values.index_select(0, mask);
+                filtered_block.names = block.names;
+                filtered.push_back(std::move(filtered_block));
+            }
+
+            return filtered;
+        }
+
         class ProgressReportingStreamBuf final : public std::streambuf {
         public:
             ProgressReportingStreamBuf(std::streambuf& target,
@@ -1981,30 +2026,44 @@ namespace lfs::io {
     }
 
     Result<void> save_ply(const PointCloud& point_cloud, const PlySaveOptions& options) {
+        PointCloud compacted_point_cloud;
+        const PointCloud* point_cloud_to_write = &point_cloud;
+        PlySaveOptions write_options = options;
+        if (point_cloud.has_deleted()) {
+            compacted_point_cloud = lfs::core::remove_deleted_points(point_cloud);
+            auto filtered_extra_attributes = filter_extra_attributes_for_point_cloud_export(
+                point_cloud, compacted_point_cloud, options.extra_attributes, options.output_path);
+            if (!filtered_extra_attributes) {
+                return std::unexpected(filtered_extra_attributes.error());
+            }
+            write_options.extra_attributes = std::move(*filtered_extra_attributes);
+            point_cloud_to_write = &compacted_point_cloud;
+        }
+
         // Calculate estimated file size for disk space check
         // PLY binary: header (~500 bytes) + vertex_count * stride (floats)
-        const size_t vertex_count = point_cloud.means.size(0);
+        const size_t vertex_count = point_cloud_to_write->means.size(0);
         size_t floats_per_vertex = 3; // positions
 
-        if (point_cloud.normals.is_valid())
+        if (point_cloud_to_write->normals.is_valid())
             floats_per_vertex += 3;
-        if (point_cloud.sh0.is_valid()) {
-            floats_per_vertex += point_cloud.sh0.ndim() == 3
-                                     ? point_cloud.sh0.size(1) * point_cloud.sh0.size(2)
-                                     : point_cloud.sh0.size(1);
+        if (point_cloud_to_write->sh0.is_valid()) {
+            floats_per_vertex += point_cloud_to_write->sh0.ndim() == 3
+                                     ? point_cloud_to_write->sh0.size(1) * point_cloud_to_write->sh0.size(2)
+                                     : point_cloud_to_write->sh0.size(1);
         }
-        if (point_cloud.shN.is_valid()) {
-            floats_per_vertex += point_cloud.shN.ndim() == 3
-                                     ? point_cloud.shN.size(1) * point_cloud.shN.size(2)
-                                     : point_cloud.shN.size(1);
+        if (point_cloud_to_write->shN.is_valid()) {
+            floats_per_vertex += point_cloud_to_write->shN.ndim() == 3
+                                     ? point_cloud_to_write->shN.size(1) * point_cloud_to_write->shN.size(2)
+                                     : point_cloud_to_write->shN.size(1);
         }
-        if (point_cloud.opacity.is_valid())
+        if (point_cloud_to_write->opacity.is_valid())
             floats_per_vertex += 1;
-        if (point_cloud.scaling.is_valid())
+        if (point_cloud_to_write->scaling.is_valid())
             floats_per_vertex += 3;
-        if (point_cloud.rotation.is_valid())
+        if (point_cloud_to_write->rotation.is_valid())
             floats_per_vertex += 4;
-        for (const auto& extra_attribute : options.extra_attributes) {
+        for (const auto& extra_attribute : write_options.extra_attributes) {
             if (!extra_attribute.values.is_valid() || extra_attribute.values.numel() == 0)
                 continue;
             if (extra_attribute.values.ndim() == 1) {
@@ -2015,7 +2074,7 @@ namespace lfs::io {
         }
 
         size_t estimated_size = 1024 + vertex_count * floats_per_vertex * sizeof(float);
-        if (point_cloud.colors.is_valid() && point_cloud.colors.numel() > 0) {
+        if (point_cloud_to_write->colors.is_valid() && point_cloud_to_write->colors.numel() > 0) {
             estimated_size += vertex_count * 3; // uchar RGB
         }
 
@@ -2045,7 +2104,7 @@ namespace lfs::io {
             cleanup_finished_saves();
             const std::lock_guard lock(g_save_mutex);
             g_save_futures.emplace_back(
-                std::async(std::launch::async, [pc = point_cloud, opts = options]() {
+                std::async(std::launch::async, [pc = *point_cloud_to_write, opts = write_options]() {
                     auto write_progress_callback = scale_export_progress(opts.progress_callback, 0.5f, 1.0f);
                     if (const auto result = write_ply_binary(
                             pc, opts.output_path, opts.binary, opts.extra_attributes, write_progress_callback);
@@ -2059,7 +2118,11 @@ namespace lfs::io {
 
             auto write_progress_callback = scale_export_progress(options.progress_callback, 0.5f, 1.0f);
             if (const auto result = write_ply_binary(
-                    point_cloud, options.output_path, options.binary, options.extra_attributes, write_progress_callback);
+                    *point_cloud_to_write,
+                    write_options.output_path,
+                    write_options.binary,
+                    write_options.extra_attributes,
+                    write_progress_callback);
                 !result) {
                 return std::unexpected(result.error());
             }

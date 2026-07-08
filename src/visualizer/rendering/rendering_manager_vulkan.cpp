@@ -1695,7 +1695,8 @@ namespace lfs::vis {
             }
             std::vector<glm::mat4> point_cloud_transforms_storage;
             const std::vector<glm::mat4>* transforms_for_request = nullptr;
-            if (settings_.point_cloud_mode && has_visible_gaussian_model) {
+            const bool render_splat_points = settings_.point_cloud_mode && has_visible_gaussian_model;
+            if (render_splat_points) {
                 transforms_for_request = &frame_ctx.scene_state.model_transforms;
             } else {
                 point_cloud_transforms_storage = {frame_ctx.scene_state.point_cloud_transform};
@@ -1720,7 +1721,7 @@ namespace lfs::vis {
                 lfs::core::Tensor splat_positions;
                 const lfs::core::Tensor* positions_ptr = nullptr;
                 const lfs::core::Tensor* colors_ptr = nullptr;
-                if (settings_.point_cloud_mode && has_visible_gaussian_model) {
+                if (render_splat_points) {
                     constexpr float SH_C0 = 0.28209479177387814f;
                     const auto& sh0 = model->sh0_raw();
                     const void* sh0_key = sh0.is_valid() ? sh0.ptr<float>() : nullptr;
@@ -1775,13 +1776,33 @@ namespace lfs::vis {
                 vk_req.model_transforms = pc_request.scene.model_transforms;
                 vk_req.transform_indices = pc_request.scene.transform_indices.get();
                 vk_req.node_visibility_mask = &pc_request.scene.node_visibility_mask;
-                if (settings_.point_cloud_mode && has_visible_gaussian_model &&
-                    model->has_deleted_mask()) {
+                const size_t point_count =
+                    (positions_ptr && positions_ptr->is_valid() && positions_ptr->ndim() > 0)
+                        ? static_cast<size_t>(positions_ptr->size(0))
+                        : 0;
+                if (render_splat_points && model->has_deleted_mask()) {
                     vk_req.deleted_mask = &model->deleted();
                     vk_req.deleted_mask_revision = point_cloud_data_revision_;
+                } else if (!render_splat_points &&
+                           frame_ctx.scene_state.point_cloud_deleted_mask &&
+                           frame_ctx.scene_state.point_cloud_deleted_mask->is_valid() &&
+                           frame_ctx.scene_state.point_cloud_deleted_mask->numel() == point_count) {
+                    vk_req.deleted_mask = frame_ctx.scene_state.point_cloud_deleted_mask.get();
+                    vk_req.deleted_mask_revision = point_cloud_data_revision_;
                 }
-                vk_req.selection_mask = pc_request.overlay.selection_mask.get();
-                vk_req.preview_selection_mask = pc_request.overlay.transient_mask.mask;
+                if (render_splat_points) {
+                    vk_req.selection_mask = pc_request.overlay.selection_mask.get();
+                } else if (frame_ctx.scene_state.point_cloud_selection_mask &&
+                           frame_ctx.scene_state.point_cloud_selection_mask->is_valid() &&
+                           frame_ctx.scene_state.point_cloud_selection_mask->numel() == point_count) {
+                    vk_req.selection_mask = frame_ctx.scene_state.point_cloud_selection_mask.get();
+                }
+                if (render_splat_points ||
+                    (pc_request.overlay.transient_mask.mask &&
+                     pc_request.overlay.transient_mask.mask->is_valid() &&
+                     pc_request.overlay.transient_mask.mask->numel() == point_count)) {
+                    vk_req.preview_selection_mask = pc_request.overlay.transient_mask.mask;
+                }
                 vk_req.selection_colors = &pc_request.overlay.selection_colors;
                 vk_req.preview_selection_additive = pc_request.overlay.transient_mask.additive;
                 vk_req.selection_revision = point_cloud_preview_selection_revision_;

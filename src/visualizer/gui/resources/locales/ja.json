@@ -749,6 +749,8 @@
     "polygon_selection": "ポリゴン選択",
     "lasso_selection": "投げ縄選択",
     "ring_selection": "リング選択",
+    "ring_selection_pointcloud_unavailable": "Rings are only available for Gaussian selections.",
+    "submode_camera_unavailable": "This selection mode is not available for cameras.",
     "box_selection": "ボックス選択",
     "sphere_selection": "球選択",
     "color_selection": "Color selection",

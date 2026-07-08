@@ -95,6 +95,10 @@ def _poll_can_align(_context) -> bool:
     return _poll_builtin_tool_available("builtin.align")
 
 
+def _poll_can_select(_context) -> bool:
+    return _poll_builtin_tool_available("builtin.select")
+
+
 def _poll_can_cropbox(context) -> bool:
     import lichtfeld as lf
     return (lf.ui.get_content_type() == "splat_files" and
@@ -121,7 +125,7 @@ BUILTIN_TOOLS: tuple[ToolDef, ...] = (
             SubmodeDef("box", "Box", "box"),
             SubmodeDef("sphere", "Sphere", "sphere"),
         ),
-        poll=_poll_has_gaussians,
+        poll=_poll_can_select,
     ),
     ToolDef(
         id="builtin.translate",
