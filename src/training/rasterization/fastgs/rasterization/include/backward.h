@@ -52,7 +52,6 @@ namespace fast_lfs::rasterization {
         bool mip_filter,
         DensificationType densification_type = DensificationType::None,
         FusedAdamSettings fused_adam = {},
-        bool detach_depth_weights = false,
         cudaStream_t stream = nullptr);
 
 }

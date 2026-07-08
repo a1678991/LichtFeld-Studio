@@ -171,7 +171,6 @@ namespace lfs::training {
         int iteration = 0,
         const FastGSFusedExtraGradients& fused_extra_gradients = {},
         const lfs::core::Tensor& grad_depth = {},
-        bool detach_depth_weights = false,
         const lfs::core::Tensor& grad_normal = {});
 
     // Convenience wrapper for inference (no backward needed)

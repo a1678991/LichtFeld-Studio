@@ -116,8 +116,7 @@ namespace fast_lfs::rasterization {
         float center_y,
         bool mip_filter,
         DensificationType densification_type,
-        const FusedAdamSettings* fused_adam,
-        bool detach_depth_weights = false);
+        const FusedAdamSettings* fused_adam);
 
     // Pre-compile all CUDA kernels to avoid JIT delays during rendering
     void warmup_kernels();

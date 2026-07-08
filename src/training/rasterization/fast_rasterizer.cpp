@@ -485,7 +485,6 @@ namespace lfs::training {
         int iteration,
         const FastGSFusedExtraGradients& fused_extra_gradients,
         const core::Tensor& grad_depth,
-        bool detach_depth_weights,
         const core::Tensor& grad_normal) {
 
         // Compute grad_alpha from background blending: output = image + (1 - alpha) * bg
@@ -677,8 +676,7 @@ namespace lfs::training {
             ctx.center_y,
             ctx.mip_filter,
             densification_type,
-            &fused_adam,
-            detach_depth_weights);
+            &fused_adam);
 
         ctx.mark_forward_context_released();
 

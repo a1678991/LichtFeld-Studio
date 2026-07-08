@@ -431,8 +431,7 @@ namespace fast_lfs::rasterization {
         float center_y,
         bool mip_filter,
         DensificationType densification_type,
-        const FusedAdamSettings* fused_adam,
-        bool detach_depth_weights) {
+        const FusedAdamSettings* fused_adam) {
 
         // The forward chose the stream and chained the arena frame on it; the
         // backward shares the same context/arena frame and must match.
@@ -608,7 +607,6 @@ namespace fast_lfs::rasterization {
                 mip_filter,
                 densification_type,
                 *fused_adam,
-                detach_depth_weights,
                 stream);
 
             // Mark frame as complete
@@ -734,7 +732,7 @@ namespace fast_lfs::rasterization {
                 nullptr,
                 NUM_GAUSSIANS, 1, 1,
                 IMG_WIDTH, IMG_HEIGHT, FOCAL, FOCAL, CENTER_X, CENTER_Y, true,
-                DensificationType::None, &warmup_adam, false);
+                DensificationType::None, &warmup_adam);
 
             cudaFree(grad_buffer);
         } else {

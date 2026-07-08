@@ -398,85 +398,6 @@ TEST(FastGSDepthGradientTest, BackwardDepthMatchesLibtorchAutogradForOverlapping
     }
 }
 
-TEST(FastGSDepthGradientTest, DetachedDepthWeightsMoveDepthButNotOpacity) {
-    if (!torch::cuda::is_available()) {
-        GTEST_SKIP() << "CUDA not available";
-    }
-
-    std::vector<float> means_data{
-        0.0f, 0.0f, 0.5f,
-        0.0f, 0.0f, 1.5f};
-    auto means = Tensor::from_blob(means_data.data(), {2, 3}, Device::CPU, DataType::Float32).to(Device::CUDA);
-    auto sh0 = Tensor::zeros({2, 1, 3}, Device::CUDA);
-    auto shN = Tensor::zeros({2, 0, 3}, Device::CUDA);
-    auto scaling = Tensor::full({2, 3}, -1.5f, Device::CUDA);
-    std::vector<float> rotation_data{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        1.0f, 0.0f, 0.0f, 0.0f};
-    auto rotation = Tensor::from_blob(rotation_data.data(), {2, 4}, Device::CPU, DataType::Float32).to(Device::CUDA);
-
-    const std::vector<float> opacity_values{0.25f, 0.4f};
-    std::vector<float> raw_opacity_values{
-        std::log(opacity_values[0] / (1.0f - opacity_values[0])),
-        std::log(opacity_values[1] / (1.0f - opacity_values[1]))};
-    auto opacity = Tensor::from_blob(raw_opacity_values.data(), {2}, Device::CPU, DataType::Float32).to(Device::CUDA);
-    auto splat = SplatData(0, means, sh0, shN, scaling, rotation, opacity, 1.0f);
-
-    auto R = Tensor::eye(3, Device::CUDA);
-    std::vector<float> t_data{0.0f, 0.0f, 4.0f};
-    auto T = Tensor::from_blob(t_data.data(), {3}, Device::CPU, DataType::Float32).to(Device::CUDA);
-    auto camera = Camera(R, T, 1.0f, 1.0f, 0.5f, 0.5f,
-                         Tensor(), Tensor(), CameraModelType::PINHOLE,
-                         "depth_grad_detached", "", std::filesystem::path{}, 1, 1, 0);
-    auto bg = Tensor::zeros({3}, Device::CUDA);
-
-    auto forward = fast_rasterize_forward(camera, splat, bg, 0, 0, 0, 0, false);
-    ASSERT_TRUE(forward.has_value()) << forward.error();
-    ASSERT_EQ(forward->first.depth.numel(), 1);
-
-    AdamConfig cfg{.lr = 0.001f, .beta1 = 0.9, .beta2 = 0.999, .eps = 1e-15};
-    AdamOptimizer opt(splat, cfg);
-    opt.allocate_gradients();
-    opt.zero_grad(0);
-
-    const float upstream_depth_grad = 1.3f;
-    auto grad_image = Tensor::zeros_like(forward->first.image);
-    auto grad_depth = Tensor::full({1, 1}, upstream_depth_grad, Device::CUDA);
-    fast_rasterize_backward(
-        forward->second,
-        grad_image,
-        splat,
-        opt,
-        {},
-        {},
-        DensificationType::None,
-        1,
-        {},
-        grad_depth,
-        true);
-
-    const auto mean_grad = recovered_fused_grad(opt, ParamType::Means).to(Device::CPU);
-    const auto opacity_grad = recovered_fused_grad(opt, ParamType::Opacity).to(Device::CPU);
-
-    const float expected_depth_grad0 = opacity_values[0] * upstream_depth_grad;
-    const float expected_depth_grad1 = (1.0f - opacity_values[0]) * opacity_values[1] * upstream_depth_grad;
-    const float* actual_mean_grad = mean_grad.ptr<float>();
-    EXPECT_NEAR(actual_mean_grad[2], expected_depth_grad0, 1.0e-4f)
-        << "detached depth-weight path should keep the front splat z gradient";
-    EXPECT_NEAR(actual_mean_grad[5], expected_depth_grad1, 1.0e-4f)
-        << "detached depth-weight path should keep the rear splat z gradient";
-    EXPECT_NEAR(actual_mean_grad[0], 0.0f, 1.0e-5f);
-    EXPECT_NEAR(actual_mean_grad[1], 0.0f, 1.0e-5f);
-    EXPECT_NEAR(actual_mean_grad[3], 0.0f, 1.0e-5f);
-    EXPECT_NEAR(actual_mean_grad[4], 0.0f, 1.0e-5f);
-
-    const float* actual_opacity_grad = opacity_grad.ptr<float>();
-    EXPECT_NEAR(actual_opacity_grad[0], 0.0f, 1.0e-5f)
-        << "depth loss must not directly train front opacity when depth weights are detached";
-    EXPECT_NEAR(actual_opacity_grad[1], 0.0f, 1.0e-5f)
-        << "depth loss must not directly train rear opacity when depth weights are detached";
-}
-
 namespace {
     struct NormalChannelScene {
         std::vector<float> means_data{0.0f, 0.0f, 1.0f};
@@ -589,7 +510,6 @@ TEST(FastGSNormalChannelTest, BackwardNormalRotationGradientMatchesFiniteDiffere
         1,
         {},
         {},
-        false,
         grad_normal);
 
     const auto rotation_grad = recovered_fused_grad(opt, ParamType::Rotation).to(Device::CPU);

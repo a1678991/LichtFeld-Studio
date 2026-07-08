@@ -425,8 +425,7 @@ namespace fast_lfs::rasterization::kernels::backward {
         const uint n_primitives,
         const uint width,
         const uint height,
-        const uint grid_width,
-        const bool detach_depth_weights) {
+        const uint grid_width) {
         (void)image;
         (void)alpha_map;
         auto block = cg::this_thread_block();
@@ -572,7 +571,6 @@ namespace fast_lfs::rasterization::kernels::backward {
                                 const float3 grad_color_pixel = s_grad_color_state[pixel_rank];
                                 const uint pixel_idx = width * pixel_coords.y + pixel_coords.x;
                                 const float grad_depth_pixel = grad_depth_map ? grad_depth_map[pixel_idx] : 0.0f;
-                                const float grad_depth_weight_pixel = detach_depth_weights ? 0.0f : grad_depth_pixel;
                                 float normal_dot_grad = 0.0f;
                                 if constexpr (NORMAL_CHANNEL) {
                                     const float3 grad_normal_pixel = make_float3(
@@ -596,7 +594,7 @@ namespace fast_lfs::rasterization::kernels::backward {
 
                                 const float dL_dalpha = dot(transmittance_before * color, grad_color_pixel) -
                                                         grad_transmittance_after * transmittance_before +
-                                                        transmittance_before * depth * grad_depth_weight_pixel +
+                                                        transmittance_before * depth * grad_depth_pixel +
                                                         transmittance_before * normal_dot_grad;
                                 accum.compensated_opacity += alpha_saturated ? 0.0f : gaussian * dL_dalpha;
                                 accum.depth += blending_weight * grad_depth_pixel;
@@ -626,7 +624,7 @@ namespace fast_lfs::rasterization::kernels::backward {
 
                                 s_transmittance_state[pixel_rank] = transmittance_before;
                                 s_grad_transmittance_state[pixel_rank] = dot(grad_color_pixel, alpha * color) +
-                                                                         alpha * depth * grad_depth_weight_pixel +
+                                                                         alpha * depth * grad_depth_pixel +
                                                                          alpha * normal_dot_grad +
                                                                          grad_transmittance_after * one_minus_alpha;
                             }

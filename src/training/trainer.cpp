@@ -4458,18 +4458,14 @@ namespace lfs::training {
                                     }
 
                                     tile_grad_depth = depth_loss_grad_;
-                                    const bool depth_backward_handles_geometry =
-                                        fastgs_path && run_fastgs_gaussian_backward;
-                                    if (!depth_backward_handles_geometry) {
-                                        if (tile_grad_alpha.is_valid() && tile_grad_alpha.numel() > 0) {
-                                            auto existing_alpha_grad = tile_grad_alpha;
-                                            if (existing_alpha_grad.ndim() == 3 && existing_alpha_grad.shape()[0] == 1) {
-                                                existing_alpha_grad = existing_alpha_grad.squeeze(0);
-                                            }
-                                            depth_loss_grad_alpha_.add_(existing_alpha_grad);
+                                    if (tile_grad_alpha.is_valid() && tile_grad_alpha.numel() > 0) {
+                                        auto existing_alpha_grad = tile_grad_alpha;
+                                        if (existing_alpha_grad.ndim() == 3 && existing_alpha_grad.shape()[0] == 1) {
+                                            existing_alpha_grad = existing_alpha_grad.squeeze(0);
                                         }
-                                        tile_grad_alpha = depth_loss_grad_alpha_;
+                                        depth_loss_grad_alpha_.add_(existing_alpha_grad);
                                     }
+                                    tile_grad_alpha = depth_loss_grad_alpha_;
                                     tile_loss = tile_loss + depth_loss_scalar_;
                                 }
                             } else {
@@ -5049,7 +5045,6 @@ namespace lfs::training {
                                                         iter,
                                                         fused_extra_gradients,
                                                         tile_grad_depth,
-                                                        tile_grad_depth.is_valid() && tile_grad_depth.numel() > 0,
                                                         tile_grad_normal);
                                 if (model_write_lock.owns_lock()) {
                                     recordParamsReady();

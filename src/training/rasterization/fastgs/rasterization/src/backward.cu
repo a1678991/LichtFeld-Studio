@@ -50,7 +50,6 @@ void fast_lfs::rasterization::backward(
     bool mip_filter,
     DensificationType densification_type,
     FusedAdamSettings fused_adam,
-    bool detach_depth_weights,
     cudaStream_t stream) {
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
     const uint64_t n_tiles_u64 = static_cast<uint64_t>(grid.x) * static_cast<uint64_t>(grid.y);
@@ -94,8 +93,7 @@ void fast_lfs::rasterization::backward(
                 n_primitives,
                 width,
                 height,
-                grid.x,
-                detach_depth_weights);
+                grid.x);
         };
         auto launch_blend_backward = [&]<DensificationType DENS_TYPE>() {
             if (grad_normal != nullptr && grad_normal_helper != nullptr) {
