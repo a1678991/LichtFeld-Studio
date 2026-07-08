@@ -32,7 +32,7 @@ def _node_type_name(node) -> str:
 def _node_contains_cropbox_target(scene, node) -> bool:
     if node is None:
         return False
-    if _node_type_name(node) in {"SPLAT", "POINTCLOUD", "DATASET"}:
+    if _node_type_name(node) in {"SPLAT", "POINTCLOUD", "CROPBOX", "DATASET"}:
         return True
     for child_id in getattr(node, "children", []) or []:
         child = scene.get_node_by_id(child_id)
@@ -100,10 +100,17 @@ def _poll_can_select(_context) -> bool:
 
 
 def _poll_can_cropbox(context) -> bool:
-    import lichtfeld as lf
-    return (lf.ui.get_content_type() == "splat_files" and
-            _poll_has_scene(context) and
-            lf.can_transform_selection())
+    if not _poll_has_scene(context):
+        return False
+    try:
+        import lichtfeld as lf
+
+        can_cropbox = getattr(getattr(lf, "ui", None), "can_cropbox", None)
+        if callable(can_cropbox):
+            return bool(can_cropbox())
+    except Exception:
+        pass
+    return _selection_has_cropbox_target()
 
 
 BUILTIN_TOOLS: tuple[ToolDef, ...] = (
