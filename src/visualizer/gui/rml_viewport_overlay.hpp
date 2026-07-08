@@ -89,7 +89,6 @@ namespace lfs::vis::gui {
         void setGTMetricsOverlay(GTMetricsOverlayState state);
         void setLodStatsOverlay(LodStatsOverlayState state);
         void setVramHudOverlay(VramHudOverlayState state);
-        bool isDueForVramProcessSample(std::chrono::milliseconds interval);
         void reloadResources();
         void render();
         void renderCached();

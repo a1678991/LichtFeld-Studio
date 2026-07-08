@@ -561,7 +561,6 @@ namespace lfs::vis::gui {
             left_dock_hovering_edge_ = false;
             left_dock_resizing_ = false;
             left_dock_visible_ = false;
-            left_dock_right_x_ = -1.0f;
             prev_mouse_x_ = input.mouse_x;
             return;
         }
@@ -576,7 +575,6 @@ namespace lfs::vis::gui {
             left_dock_hovering_edge_ = false;
             left_dock_resizing_ = false;
             left_dock_visible_ = false;
-            left_dock_right_x_ = -1.0f;
             prev_mouse_x_ = input.mouse_x;
             return;
         }
@@ -645,7 +643,6 @@ namespace lfs::vis::gui {
                                           screen.work_pos.y, screen.work_pos.y + panel_h, &dock_input);
         }
         left_dock_visible_ = preloaded_h > 0.0f;
-        left_dock_right_x_ = left_dock_visible_ ? panel_right_x : -1.0f;
         if (!left_dock_visible_)
             return;
 
@@ -682,7 +679,6 @@ namespace lfs::vis::gui {
             left_dock_hovering_edge_ = false;
             left_dock_resizing_ = false;
             left_dock_visible_ = false;
-            left_dock_right_x_ = -1.0f;
             prev_mouse_x_ = input.mouse_x;
             return;
         }
@@ -697,7 +693,6 @@ namespace lfs::vis::gui {
             left_dock_hovering_edge_ = false;
             left_dock_resizing_ = false;
             left_dock_visible_ = false;
-            left_dock_right_x_ = -1.0f;
             prev_mouse_x_ = input.mouse_x;
             return;
         }
@@ -719,7 +714,6 @@ namespace lfs::vis::gui {
                                                             draw_ctx,
                                                             &input);
         left_dock_visible_ = drawn_h > 0.0f;
-        left_dock_right_x_ = left_dock_visible_ ? panel_x + panel_w : -1.0f;
         prev_mouse_x_ = input.mouse_x;
     }
 

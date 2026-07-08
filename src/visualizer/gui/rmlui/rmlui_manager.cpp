@@ -53,6 +53,10 @@ namespace lfs::vis::gui {
             return std::string_view(value) != "0";
         }
 
+        bool pointInRect(const RmlRect& rect, const float x, const float y) {
+            return x >= rect.x1 && y >= rect.y1 && x < rect.x2 && y < rect.y2;
+        }
+
         std::string timerSafeContextName(const std::string_view name) {
             if (name.empty())
                 return "unknown";
@@ -372,6 +376,7 @@ namespace lfs::vis::gui {
                 fn(context);
             context_names_.erase(context);
             tracked_context_frames_.erase(context);
+            previous_context_frames_.erase(context);
             tooltip_reveal_deadlines_.erase(context);
             Rml::RemoveContext(name);
             contexts_.erase(it);
@@ -392,13 +397,15 @@ namespace lfs::vis::gui {
     void RmlUIManager::beginFrameCursorTracking() {
         if (system_interface_)
             system_interface_->beginFrame();
+        previous_context_frames_ = tracked_context_frames_;
         tracked_context_frames_.clear();
         tracked_context_order_ = 0;
     }
 
     void RmlUIManager::trackContextFrame(const Rml::Context* const context,
                                          const int window_x,
-                                         const int window_y) {
+                                         const int window_y,
+                                         std::optional<RmlRect> active_overlay) {
         if (system_interface_)
             system_interface_->trackContext(context, window_x, window_y);
         if (!context)
@@ -407,6 +414,11 @@ namespace lfs::vis::gui {
         const auto dimensions = context->GetDimensions();
         auto& frame = tracked_context_frames_[context];
         const bool needs_passive_frames = frame.needs_passive_mouse_move_frames;
+        if (active_overlay &&
+            (active_overlay->x2 <= active_overlay->x1 ||
+             active_overlay->y2 <= active_overlay->y1)) {
+            active_overlay.reset();
+        }
         frame = TrackedContextFrame{
             .context = const_cast<Rml::Context*>(context),
             .window_x = window_x,
@@ -415,6 +427,7 @@ namespace lfs::vis::gui {
             .height = dimensions.y,
             .order = ++tracked_context_order_,
             .needs_passive_mouse_move_frames = needs_passive_frames,
+            .active_overlay = active_overlay,
         };
     }
 
@@ -463,6 +476,7 @@ namespace lfs::vis::gui {
         if (tracked_context_frames_.empty())
             return true;
 
+        const TrackedContextFrame* top_overlay_context = nullptr;
         const TrackedContextFrame* top_context = nullptr;
         bool any_active_context = false;
         for (const auto& [_, frame] : tracked_context_frames_) {
@@ -476,11 +490,17 @@ namespace lfs::vis::gui {
                 any_active_context = true;
             }
 
+            const float local_x = window_x - static_cast<float>(frame.window_x);
+            const float local_y = window_y - static_cast<float>(frame.window_y);
+            if (frame.active_overlay && pointInRect(*frame.active_overlay, local_x, local_y)) {
+                any_active_context = true;
+                if (!top_overlay_context || frame.order > top_overlay_context->order)
+                    top_overlay_context = &frame;
+            }
+
             if (frame.width <= 0 || frame.height <= 0)
                 continue;
 
-            const float local_x = window_x - static_cast<float>(frame.window_x);
-            const float local_y = window_y - static_cast<float>(frame.window_y);
             if (local_x < 0.0f || local_y < 0.0f ||
                 local_x >= static_cast<float>(frame.width) ||
                 local_y >= static_cast<float>(frame.height)) {
@@ -490,6 +510,9 @@ namespace lfs::vis::gui {
             if (!top_context || frame.order > top_context->order)
                 top_context = &frame;
         }
+
+        if (top_overlay_context)
+            top_context = top_overlay_context;
 
         if (!top_context)
             return any_active_context;
@@ -509,15 +532,38 @@ namespace lfs::vis::gui {
         return next_hover != current_hover;
     }
 
-    bool RmlUIManager::wantsCaptureMouse() const {
-        for (const auto& [_, context] : contexts_) {
-            if (!context)
+    bool RmlUIManager::activeOverlayContainsPoint(const float window_x,
+                                                  const float window_y) const {
+        for (const auto& [_, frame] : tracked_context_frames_) {
+            if (!frame.context || !frame.active_overlay)
                 continue;
-            auto* const hover = context->GetHoverElement();
-            if (hover && hover->GetTagName() != "body")
+
+            const float local_x = window_x - static_cast<float>(frame.window_x);
+            const float local_y = window_y - static_cast<float>(frame.window_y);
+            if (pointInRect(*frame.active_overlay, local_x, local_y))
                 return true;
         }
         return false;
+    }
+
+    bool RmlUIManager::activeOverlayOccludesContext(const Rml::Context* const context,
+                                                    const float window_x,
+                                                    const float window_y) const {
+        const TrackedContextFrame* owner = nullptr;
+        for (const auto& [_, frame] : previous_context_frames_) {
+            if (!frame.context || !frame.active_overlay)
+                continue;
+
+            const float local_x = window_x - static_cast<float>(frame.window_x);
+            const float local_y = window_y - static_cast<float>(frame.window_y);
+            if (!pointInRect(*frame.active_overlay, local_x, local_y))
+                continue;
+
+            if (!owner || frame.order > owner->order)
+                owner = &frame;
+        }
+
+        return owner && owner->context != context;
     }
 
     bool RmlUIManager::wantsCaptureKeyboard() const {

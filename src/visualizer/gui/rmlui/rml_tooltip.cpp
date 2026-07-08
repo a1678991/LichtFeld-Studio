@@ -46,9 +46,24 @@ namespace lfs::vis::gui {
             const auto last = key.find_last_not_of(" \t\r\n");
             return key.substr(first, last - first + 1);
         }
+
     } // namespace
 
+    // A native <select> marks its selectbox/value/arrow ':checked' while its
+    // popup is open. Used to suppress tooltips over the popup.
+    bool rmlHoverInsideOpenDropdown(Rml::Element* hover) {
+        for (auto* el = hover; el; el = el->GetParentNode()) {
+            const auto tag = el->GetTagName();
+            if ((tag == "selectbox" || tag == "selectvalue" || tag == "selectarrow") &&
+                el->IsPseudoClassSet("checked"))
+                return true;
+        }
+        return false;
+    }
+
     std::string resolveRmlTooltip(Rml::Element* hover) {
+        if (rmlHoverInsideOpenDropdown(hover))
+            return {};
         auto& loc = lfs::event::LocalizationManager::getInstance();
         for (auto* el = hover; el; el = el->GetParentNode()) {
             const auto title = el->GetAttribute<Rml::String>("title", "");

@@ -409,10 +409,6 @@ namespace lfs::vis::gui {
             markRenderNeeded(RenderReason::VramHud);
     }
 
-    bool RmlViewportOverlay::isDueForVramProcessSample(std::chrono::milliseconds interval) {
-        return vram_hud_ ? vram_hud_->isDueForProcessSample(interval) : false;
-    }
-
     void RmlViewportOverlay::bindReactiveStore() {
         auto& store = lfs::vis::app_store();
         gt_metrics_config_ = store.gt_metrics_overlay_config.get();

@@ -6577,6 +6577,11 @@ namespace lfs::vis::gui {
             return {.blocks_pointer = true, .takes_keyboard_focus = true};
         }
 
+        if (rmlui_manager_.activeOverlayContainsPoint(static_cast<float>(x),
+                                                      static_cast<float>(y))) {
+            return {.blocks_pointer = true, .takes_keyboard_focus = true};
+        }
+
         if (panel_layout_.isResizingPanel() || isPositionOverFloatingPanel(x, y)) {
             return {.blocks_pointer = true, .takes_keyboard_focus = true};
         }
@@ -6616,6 +6621,20 @@ namespace lfs::vis::gui {
 
         cmd::ShowWindow::when([this](const auto& e) {
             showWindow(e.window_name, e.show);
+        });
+
+        cmd::ShowVideoExtractor::when([this](const auto& e) {
+            auto& panels = PanelRegistry::instance();
+            panels.set_panel_enabled("native.video_extractor", true);
+            panels.bring_panel_to_front("native.video_extractor");
+            if (!video_widget_) {
+                LOG_ERROR("Video extractor widget is not available");
+                return;
+            }
+            if (!video_widget_->openVideoPath(e.video_path)) {
+                LOG_WARN("Failed to open dropped video in extractor: {}",
+                         lfs::core::path_to_utf8(e.video_path));
+            }
         });
 
         cmd::GoToCamView::when([this](const auto& e) {

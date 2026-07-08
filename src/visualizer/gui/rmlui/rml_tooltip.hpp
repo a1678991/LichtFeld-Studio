@@ -29,6 +29,10 @@ namespace lfs::vis::gui {
 
     LFS_VIS_API std::string resolveRmlTooltip(Rml::Element* hover);
 
+    // True while the hovered element is (inside) a native <select> whose popup
+    // is open.
+    LFS_VIS_API bool rmlHoverInsideOpenDropdown(Rml::Element* hover);
+
     // Per-document tooltip state. Each renderer owns one instance and drives it
     // from its own input/render passes, so the tooltip element lives inside the
     // hovered context and is positioned in that context's local coordinates.
