@@ -235,6 +235,7 @@ target_link_libraries(lfs_visualizer
         OpenSSL::SSL
         OpenSSL::Crypto
         CUDA::cudart
+        Freetype::Freetype
         nfd::nfd
         vterm
 )
