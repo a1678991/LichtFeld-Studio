@@ -100,7 +100,6 @@ namespace lfs::vis::gui {
         [[nodiscard]] bool isResizeDeferring() const { return resize_deferring_; }
 
         void activateTheme(const std::string& theme_id);
-        const std::string& activeThemeId() const { return active_theme_id_; }
 
         RenderInterface_VK* getVulkanRenderInterface() const { return vulkan_render_interface_; }
         RmlTextInputHandler* getTextInputHandler() const { return text_input_handler_.get(); }
@@ -149,7 +148,6 @@ namespace lfs::vis::gui {
         // Focus-state aggregators across all live RmlUi contexts. These replace prior
         // ImGui::GetIO().WantCapture* / ImGui::IsAnyItemActive() reads so viewport input
         // suppression reflects the actual GUI surface the user is interacting with.
-        [[nodiscard]] bool wantsCaptureMouse() const;
         [[nodiscard]] bool wantsCaptureKeyboard() const;
         [[nodiscard]] bool wantsTextInput() const;
         [[nodiscard]] bool anyItemActive() const;

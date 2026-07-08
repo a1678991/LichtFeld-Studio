@@ -56,7 +56,6 @@ namespace lfs::vis::gui {
         static bool consumeFrameWantsTextInput();
 
         void setHeightMode(PanelHeightMode mode) { height_mode_ = mode; }
-        PanelHeightMode getHeightMode() const { return height_mode_; }
         float getContentHeight() const { return last_content_height_; }
         void setForcedHeight(float h) { forced_height_ = h; }
         void markContentDirty() {

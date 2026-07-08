@@ -5383,9 +5383,9 @@ namespace lfs::vis::gui {
             auto& focus = guiFocusState();
             focus.reset();
             // Seed from ImGui only; RmlUi panels populate their own claims during
-            // processInput. Aggregating wantsCaptureMouse() here reads stale hover
-            // state from the previous frame, which becomes self-perpetuating once a
-            // panel sets a hover element — toolbar tools then cannot be activated.
+            // processInput. Aggregating RmlUi's mouse-capture state here reads stale
+            // hover state from the previous frame, which becomes self-perpetuating once
+            // a panel sets a hover element — toolbar tools then cannot be activated.
             const ImGuiIO& io = ImGui::GetIO();
             focus.want_capture_mouse = io.WantCaptureMouse;
             focus.want_capture_keyboard = io.WantCaptureKeyboard || rmlui_manager_.wantsCaptureKeyboard();
@@ -7016,6 +7016,20 @@ namespace lfs::vis::gui {
 
         cmd::ShowWindow::when([this](const auto& e) {
             showWindow(e.window_name, e.show);
+        });
+
+        cmd::ShowVideoExtractor::when([this](const auto& e) {
+            auto& panels = PanelRegistry::instance();
+            panels.set_panel_enabled("native.video_extractor", true);
+            panels.bring_panel_to_front("native.video_extractor");
+            if (!video_widget_) {
+                LOG_ERROR("Video extractor widget is not available");
+                return;
+            }
+            if (!video_widget_->openVideoPath(e.video_path)) {
+                LOG_WARN("Failed to open dropped video in extractor: {}",
+                         lfs::core::path_to_utf8(e.video_path));
+            }
         });
 
         cmd::GoToCamView::when([this](const auto& e) {

@@ -566,17 +566,6 @@ namespace lfs::vis::gui {
         return owner && owner->context != context;
     }
 
-    bool RmlUIManager::wantsCaptureMouse() const {
-        for (const auto& [_, context] : contexts_) {
-            if (!context)
-                continue;
-            auto* const hover = context->GetHoverElement();
-            if (hover && hover->GetTagName() != "body")
-                return true;
-        }
-        return false;
-    }
-
     bool RmlUIManager::wantsCaptureKeyboard() const {
         for (const auto& [_, context] : contexts_) {
             if (!context)
