@@ -116,8 +116,6 @@ namespace lfs::training::kernels {
     // depth in inverse-depth space using a fixed per-camera anchor alignment.
     // The loss is alpha-weighted Geman-McClure plus a gradient-alignment term.
     // Emits gradients w.r.t. both the accumulated depth map and the alpha map.
-    // error_map_out (optional, may be null): per-pixel 2*rho residual in [0,1),
-    // zeroed when the loss is inactive.
     // anchor: fixed per-camera alignment; invalid or null anchors disable the
     // loss for the image.
     // prior_quantization_step: quantization step of the prior in target units
@@ -131,7 +129,6 @@ namespace lfs::training::kernels {
         const float* target_depth,
         float* grad_depth,
         float* grad_alpha,
-        float* error_map_out,
         float* loss_out,
         float* partial_sums,
         int width,

@@ -279,7 +279,6 @@ namespace lfs::training::kernels {
             const float* __restrict__ target_depth,
             float* __restrict__ grad_depth,
             float* __restrict__ grad_alpha,
-            float* __restrict__ error_map,
             const float* __restrict__ finals,
             double* __restrict__ block_partials,
             const int width,
@@ -309,9 +308,6 @@ namespace lfs::training::kernels {
                 if (!valid) {
                     grad_depth[idx] = 0.0f;
                     grad_alpha[idx] = 0.0f;
-                    if (error_map) {
-                        error_map[idx] = 0.0f;
-                    }
                     continue;
                 }
                 const int x = static_cast<int>(idx % width);
@@ -321,15 +317,6 @@ namespace lfs::training::kernels {
                     model, a, b, floor_f, p_max, half_step);
 
                 float gp = 0.0f;
-                if (error_map) {
-                    if (c.ok) {
-                        const float x_r =
-                            deadband_signed_residual(c.p - c.d, c.delta) * inv_scaled_sigma;
-                        error_map[idx] = (x_r * x_r) / (1.0f + x_r * x_r);
-                    } else {
-                        error_map[idx] = 0.0f;
-                    }
-                }
                 if (c.ok) {
                     const float x_r =
                         deadband_signed_residual(c.p - c.d, c.delta) * inv_scaled_sigma;
@@ -810,7 +797,6 @@ namespace lfs::training::kernels {
         const float* target_depth,
         float* grad_depth,
         float* grad_alpha,
-        float* error_map_out,
         float* loss_out,
         float* partial_sums,
         const int width,
@@ -862,7 +848,6 @@ namespace lfs::training::kernels {
             target_depth,
             grad_depth,
             grad_alpha,
-            error_map_out,
             finals,
             block_partials,
             width,

@@ -41,8 +41,6 @@ namespace lfs::training::kernels {
     // couples splat orientation to actual surface position.
     // All grad buffers must be pre-initialized (zeroed or holding other loss
     // gradients); this kernel accumulates into them.
-    // residual_map (optional) receives (1 - cos) clamped to [0,1] per active
-    // pixel for densification error blending.
     void launch_normal_consistency_loss(
         const float* rendered_normal,      // [3*H*W] CHW accumulated normals
         const float* rendered_depth_accum, // [H*W] accumulated depth
@@ -50,7 +48,6 @@ namespace lfs::training::kernels {
         float* grad_normal,                // [3*H*W] CHW, accumulated into
         float* grad_depth_accum,           // [H*W], accumulated into
         float* grad_alpha,                 // [H*W], accumulated into
-        float* residual_map,               // [H*W] or nullptr, written
         float* loss_out,                   // [1], written
         float* partial_sums,               // [normal_consistency_partial_count(num_pixels)]
         int width,
@@ -66,14 +63,12 @@ namespace lfs::training::kernels {
     // normal map and the normal derived from rendered expected depth. Gradients
     // flow only through n_depth into grad_depth_accum / grad_alpha.
     // All grad buffers must be pre-initialized; this kernel accumulates.
-    // residual_map (optional) receives 0.5 * (1 - cos) per active pixel.
     void launch_normal_prior_depth_loss(
         const float* prior_normal,         // [3*H*W] CHW prior normals
         const float* rendered_depth_accum, // [H*W] accumulated depth
         const float* rendered_alpha,       // [H*W]
         float* grad_depth_accum,           // [H*W], accumulated into
         float* grad_alpha,                 // [H*W], accumulated into
-        float* residual_map,               // [H*W] or nullptr, written
         float* loss_out,                   // [1], written
         float* partial_sums,               // [normal_consistency_partial_count(num_pixels)]
         int width,

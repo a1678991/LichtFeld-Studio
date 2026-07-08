@@ -191,7 +191,6 @@ namespace {
         torch::Tensor loss;
         torch::Tensor grad_depth;
         torch::Tensor grad_alpha;
-        torch::Tensor error_map;
         torch::Tensor partials;
     };
 
@@ -212,7 +211,6 @@ namespace {
             .loss = torch::empty({1}, opts),
             .grad_depth = torch::empty_like(depth_accum),
             .grad_alpha = torch::empty_like(depth_accum),
-            .error_map = torch::empty_like(depth_accum),
             .partials = torch::empty(
                 {static_cast<int64_t>(lfs::training::kernels::depth_loss_partial_count(num_pixels))}, opts)};
 
@@ -222,7 +220,6 @@ namespace {
             target_depth.data_ptr<float>(),
             result.grad_depth.data_ptr<float>(),
             result.grad_alpha.data_ptr<float>(),
-            result.error_map.data_ptr<float>(),
             result.loss.data_ptr<float>(),
             result.partials.data_ptr<float>(),
             width,
@@ -930,7 +927,6 @@ TEST_F(AnalyticalGradientTest, SsiDepthLossQuantizedPriorCorridorSilencesSmoothS
     EXPECT_EQ(gated.loss.item<float>(), 0.0f);
     EXPECT_EQ(gated.grad_depth.abs().max().item<float>(), 0.0f);
     EXPECT_EQ(gated.grad_alpha.abs().max().item<float>(), 0.0f);
-    EXPECT_EQ(gated.error_map.abs().max().item<float>(), 0.0f);
 
     // Without the corridor the same configuration drags the smooth surface
     // toward the staircase.
@@ -2678,7 +2674,6 @@ namespace {
         torch::Tensor grad_normal;
         torch::Tensor grad_depth;
         torch::Tensor grad_alpha;
-        torch::Tensor residual;
         torch::Tensor partials;
     };
 
@@ -2698,7 +2693,6 @@ namespace {
             .grad_normal = torch::zeros_like(rendered_normal),
             .grad_depth = torch::zeros_like(depth_accum),
             .grad_alpha = torch::zeros_like(depth_accum),
-            .residual = torch::empty_like(depth_accum),
             .partials = torch::empty(
                 {static_cast<int64_t>(lfs::training::kernels::normal_consistency_partial_count(num_pixels))}, opts)};
 
@@ -2709,7 +2703,6 @@ namespace {
             result.grad_normal.data_ptr<float>(),
             result.grad_depth.data_ptr<float>(),
             result.grad_alpha.data_ptr<float>(),
-            result.residual.data_ptr<float>(),
             result.loss.data_ptr<float>(),
             result.partials.data_ptr<float>(),
             width,
@@ -2736,7 +2729,6 @@ namespace {
             .grad_normal = torch::zeros_like(prior_normal),
             .grad_depth = torch::zeros_like(depth_accum),
             .grad_alpha = torch::zeros_like(depth_accum),
-            .residual = torch::empty_like(depth_accum),
             .partials = torch::empty(
                 {static_cast<int64_t>(lfs::training::kernels::normal_consistency_partial_count(num_pixels))}, opts)};
 
@@ -2746,7 +2738,6 @@ namespace {
             alpha_accum.data_ptr<float>(),
             result.grad_depth.data_ptr<float>(),
             result.grad_alpha.data_ptr<float>(),
-            result.residual.data_ptr<float>(),
             result.loss.data_ptr<float>(),
             result.partials.data_ptr<float>(),
             width,

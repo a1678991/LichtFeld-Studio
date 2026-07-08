@@ -454,16 +454,13 @@ namespace lfs::training {
         core::Tensor depth_loss_scalar_;
         core::Tensor depth_loss_grad_;
         core::Tensor depth_loss_grad_alpha_;
-        core::Tensor depth_loss_error_map_;
         core::Tensor depth_loss_partials_;
         core::Tensor normal_loss_scalar_;
         core::Tensor normal_loss_grad_;
         core::Tensor normal_loss_partials_;
         core::Tensor normal_consistency_scalar_;
         core::Tensor normal_consistency_partials_;
-        core::Tensor normal_consistency_residual_;
         core::Tensor normal_prior_depth_scalar_;
-        core::Tensor normal_prior_depth_residual_;
         // Dataset-level normal-prior convention, resolved once at startup
         bool normal_prior_flip_yz_ = false;
         bool normal_prior_world_space_ = false;

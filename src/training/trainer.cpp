@@ -4221,9 +4221,7 @@ namespace lfs::training {
                     lfs::core::Tensor tile_grad_normal;
                     lfs::core::Tensor tile_error_map;
                     lfs::core::Tensor mask_tile;
-                    bool depth_error_map_ready = false;
                     bool depth_grad_buffers_active = false;
-                    bool normal_consistency_residual_ready = false;
 
                     const auto ensure_depth_grad_buffers =
                         [&](const lfs::core::Tensor& rendered_depth,
@@ -4411,16 +4409,6 @@ namespace lfs::training {
                                 }
                                 depth_loss_partials_.set_stream(depth_stream);
 
-                                float* depth_error_ptr = nullptr;
-                                if (use_pixel_error_densification) {
-                                    if (!depth_loss_error_map_.is_valid() ||
-                                        depth_loss_error_map_.shape() != rendered_depth.shape()) {
-                                        depth_loss_error_map_ = lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
-                                    }
-                                    depth_loss_error_map_.set_stream(depth_stream);
-                                    depth_error_ptr = depth_loss_error_map_.ptr<float>();
-                                }
-
                                 const lfs::training::kernels::DepthAnchor* depth_anchor = nullptr;
                                 if (const auto anchor_it = depth_anchors_.find(cam->uid());
                                     anchor_it != depth_anchors_.end()) {
@@ -4437,7 +4425,6 @@ namespace lfs::training {
                                         target_depth.ptr<float>(),
                                         depth_loss_grad_.ptr<float>(),
                                         depth_loss_grad_alpha_.ptr<float>(),
-                                        depth_error_ptr,
                                         depth_loss_scalar_.ptr<float>(),
                                         depth_loss_partials_.ptr<float>(),
                                         depth_width,
@@ -4447,7 +4434,6 @@ namespace lfs::training {
                                         depth_prior_qstep,
                                         depth_anchor,
                                         depth_stream);
-                                    depth_error_map_ready = depth_error_ptr != nullptr;
 
                                     static const bool depth_loss_diag = env_flag_enabled("LFS_DEPTH_LOSS_DIAG");
                                     static const int depth_loss_diag_interval =
@@ -4627,17 +4613,6 @@ namespace lfs::training {
                                         }
                                         normal_consistency_partials_.set_stream(normal_stream);
 
-                                        float* prior_depth_residual_ptr = nullptr;
-                                        if (use_pixel_error_densification) {
-                                            if (!normal_consistency_residual_.is_valid() ||
-                                                normal_consistency_residual_.shape() != rendered_depth.shape()) {
-                                                normal_consistency_residual_ =
-                                                    lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
-                                            }
-                                            normal_consistency_residual_.set_stream(normal_stream);
-                                            prior_depth_residual_ptr = normal_consistency_residual_.ptr<float>();
-                                        }
-
                                         const float fx = cam->focal_x() * static_cast<float>(render_w) /
                                                          static_cast<float>(cam->camera_width());
                                         const float fy = cam->focal_y() * static_cast<float>(render_h) /
@@ -4653,7 +4628,6 @@ namespace lfs::training {
                                             rendered_alpha.ptr<float>(),
                                             depth_loss_grad_.ptr<float>(),
                                             depth_loss_grad_alpha_.ptr<float>(),
-                                            prior_depth_residual_ptr,
                                             normal_prior_depth_scalar_.ptr<float>(),
                                             normal_consistency_partials_.ptr<float>(),
                                             render_w,
@@ -4665,7 +4639,6 @@ namespace lfs::training {
                                             params_.optimization.normal_loss_weight,
                                             normal_stream);
                                         normal_prior_depth_ran = true;
-                                        normal_consistency_residual_ready = prior_depth_residual_ptr != nullptr;
                                         tile_loss = tile_loss + normal_prior_depth_scalar_;
                                     }
                                 }
@@ -4783,26 +4756,6 @@ namespace lfs::training {
                                 normal_consistency_partials_ = lfs::core::Tensor::empty({consistency_partials}, lfs::core::Device::CUDA);
                             }
                             normal_consistency_partials_.set_stream(consistency_stream);
-                            float* consistency_residual_ptr = nullptr;
-                            if (use_pixel_error_densification) {
-                                if (normal_consistency_residual_ready) {
-                                    if (!normal_prior_depth_residual_.is_valid() ||
-                                        normal_prior_depth_residual_.shape() != rendered_depth.shape()) {
-                                        normal_prior_depth_residual_ =
-                                            lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
-                                    }
-                                    normal_prior_depth_residual_.set_stream(consistency_stream);
-                                    consistency_residual_ptr = normal_prior_depth_residual_.ptr<float>();
-                                } else {
-                                    if (!normal_consistency_residual_.is_valid() ||
-                                        normal_consistency_residual_.shape() != rendered_depth.shape()) {
-                                        normal_consistency_residual_ =
-                                            lfs::core::Tensor::empty(rendered_depth.shape(), lfs::core::Device::CUDA);
-                                    }
-                                    normal_consistency_residual_.set_stream(consistency_stream);
-                                    consistency_residual_ptr = normal_consistency_residual_.ptr<float>();
-                                }
-                            }
 
                             const float fx = cam->focal_x() * static_cast<float>(render_w) /
                                              static_cast<float>(cam->camera_width());
@@ -4820,7 +4773,6 @@ namespace lfs::training {
                                 tile_grad_normal.ptr<float>(),
                                 depth_loss_grad_.ptr<float>(),
                                 depth_loss_grad_alpha_.ptr<float>(),
-                                consistency_residual_ptr,
                                 normal_consistency_scalar_.ptr<float>(),
                                 normal_consistency_partials_.ptr<float>(),
                                 render_w,
@@ -4831,13 +4783,6 @@ namespace lfs::training {
                                 cy,
                                 params_.optimization.normal_consistency_weight,
                                 consistency_stream);
-                            if (use_pixel_error_densification && consistency_residual_ptr != nullptr) {
-                                if (normal_consistency_residual_ready) {
-                                    normal_consistency_residual_.add_(normal_prior_depth_residual_);
-                                    normal_consistency_residual_.mul_(0.5f);
-                                }
-                                normal_consistency_residual_ready = true;
-                            }
 
                             static const bool normal_loss_diag = env_flag_enabled("LFS_NORMAL_LOSS_DIAG");
                             static const int normal_loss_diag_interval =
@@ -4952,33 +4897,6 @@ namespace lfs::training {
                         lfs::training::kernels::launch_normalize_by_device_scalar(
                             tile_error_map.ptr<float>(), tile_error_map.numel(),
                             map_mean.ptr<float>(), 1e-6f);
-
-                        // Blend depth and normal-consistency residuals as further
-                        // mean-normalized signals: relative structure from every
-                        // map survives, and a uniformly-wrong signal cannot
-                        // flatten the photometric one into grow-everywhere.
-                        int error_signal_count = 1;
-                        if (depth_error_map_ready &&
-                            tile_error_map.shape() == depth_loss_error_map_.shape()) {
-                            const auto depth_map_mean = depth_loss_error_map_.mean();
-                            lfs::training::kernels::launch_normalize_by_device_scalar(
-                                depth_loss_error_map_.ptr<float>(), depth_loss_error_map_.numel(),
-                                depth_map_mean.ptr<float>(), 1e-6f);
-                            tile_error_map.add_(depth_loss_error_map_);
-                            ++error_signal_count;
-                        }
-                        if (normal_consistency_residual_ready &&
-                            tile_error_map.shape() == normal_consistency_residual_.shape()) {
-                            const auto residual_mean = normal_consistency_residual_.mean();
-                            lfs::training::kernels::launch_normalize_by_device_scalar(
-                                normal_consistency_residual_.ptr<float>(), normal_consistency_residual_.numel(),
-                                residual_mean.ptr<float>(), 1e-6f);
-                            tile_error_map.add_(normal_consistency_residual_);
-                            ++error_signal_count;
-                        }
-                        if (error_signal_count > 1) {
-                            tile_error_map.mul_(1.0f / static_cast<float>(error_signal_count));
-                        }
                     }
 
                     if (live_vram_profiler_enabled()) {

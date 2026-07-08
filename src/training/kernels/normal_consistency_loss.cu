@@ -352,7 +352,6 @@ namespace lfs::training::kernels {
             float* __restrict__ grad_normal,
             float* __restrict__ grad_depth_accum,
             float* __restrict__ grad_alpha,
-            float* __restrict__ residual_map,
             const float* __restrict__ finals,
             double* __restrict__ block_partials,
             const Intrinsics k,
@@ -371,9 +370,6 @@ namespace lfs::training::kernels {
                 const int y = static_cast<int>(idx / width);
                 const ConsistencySample s = load_sample(
                     rendered_normal, depth_accum, alpha_map, k, x, y, width, height, num_pixels);
-                if (residual_map) {
-                    residual_map[idx] = s.active ? fminf(1.0f - s.cos, 1.0f) : 0.0f;
-                }
                 if (!s.active || inv_norm == 0.0f) {
                     continue;
                 }
@@ -474,7 +470,6 @@ namespace lfs::training::kernels {
             const float* __restrict__ alpha_map,
             float* __restrict__ grad_depth_accum,
             float* __restrict__ grad_alpha,
-            float* __restrict__ residual_map,
             const float* __restrict__ finals,
             double* __restrict__ block_partials,
             const Intrinsics k,
@@ -498,9 +493,6 @@ namespace lfs::training::kernels {
                 float cos = 0.0f;
                 if (active) {
                     cos = s.nd.x * prior_hat.x + s.nd.y * prior_hat.y + s.nd.z * prior_hat.z;
-                }
-                if (residual_map) {
-                    residual_map[idx] = active ? 0.5f * (1.0f - cos) : 0.0f;
                 }
                 if (!active || inv_norm == 0.0f) {
                     continue;
@@ -542,7 +534,6 @@ namespace lfs::training::kernels {
         float* grad_normal,
         float* grad_depth_accum,
         float* grad_alpha,
-        float* residual_map,
         float* loss_out,
         float* partial_sums,
         const int width,
@@ -582,7 +573,6 @@ namespace lfs::training::kernels {
             grad_normal,
             grad_depth_accum,
             grad_alpha,
-            residual_map,
             finals,
             block_partials,
             k,
@@ -602,7 +592,6 @@ namespace lfs::training::kernels {
         const float* rendered_alpha,
         float* grad_depth_accum,
         float* grad_alpha,
-        float* residual_map,
         float* loss_out,
         float* partial_sums,
         const int width,
@@ -641,7 +630,6 @@ namespace lfs::training::kernels {
             rendered_alpha,
             grad_depth_accum,
             grad_alpha,
-            residual_map,
             finals,
             block_partials,
             k,
