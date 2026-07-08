@@ -1349,11 +1349,11 @@ import lichtfeld as lf
 | `get_selected_node_name()`            | `str`            | First selected node name          |
 | `get_selected_node_names()`           | `list[str]`      | All selected node names           |
 | `can_transform_selection()`           | `bool`           | Selection is transformable        |
-| `get_selected_node_transform()`       | `list[float]`    | 16 floats                         |
-| `set_selected_node_transform(matrix)` | `None`           | Set transform                     |
+| `get_selected_node_transform()`       | `list[float]`    | 16 column-major floats            |
+| `set_selected_node_transform(matrix)` | `None`           | Set transform from 16 column-major floats |
 | `get_selection_center()`              | `list[float]`    | Local space center                |
 | `get_selection_visualizer_world_center()` | `list[float]` | Visualizer world-space center     |
-| `get_selection_world_center()`        | `list[float]`    | Deprecated alias for visualizer world-space center |
+| `get_selection_world_center()`        | `list[float]`    | Deprecated legacy data-world center; use `get_selection_visualizer_world_center()` |
 | `capture_selection_transforms()`      | `dict`           | Snapshot for undo                 |
 
 ### Scene Shortcuts
@@ -1420,10 +1420,10 @@ coordinate data.
 
 | Function                                    | Returns        | Description                      |
 |---------------------------------------------|----------------|----------------------------------|
-| `get_node_transform(name)`                  | `list[float]`  | 16 floats                         |
-| `set_node_transform(name, matrix)`          | `None`         | Set 4x4 transform                |
-| `decompose_transform(matrix)`               | `dict`         | See keys below                   |
-| `compose_transform(translation, euler_deg, scale)` | `list[float]` | Build 4x4 from components (Euler in degrees) |
+| `get_node_transform(name)`                  | `list[float]`  | 16 column-major floats           |
+| `set_node_transform(name, matrix)`          | `None`         | Set 4x4 transform from 16 column-major floats |
+| `decompose_transform(matrix)`               | `dict`         | Decompose 16 column-major floats; see keys below |
+| `compose_transform(translation, euler_deg, scale)` | `list[float]` | Build 16 column-major floats from components (Euler in degrees) |
 
 `decompose_transform` returns a dict with these keys:
 
@@ -1545,12 +1545,12 @@ Callbacks registered with `lf.on_*` receive one positional hook payload. If you 
 | `capture_viewport()`                                  | `ViewportRender` | Capture for async use      |
 | `export_viewport_image(path, format='', width=0, height=0, transparent=False, jpeg_quality=95)` | `dict` | Export active viewport to PNG/JPEG |
 | `look_at(eye, target, up=(0,1,0))`                    | `(Tensor, Tensor)` | Compute `(rotation, translation)` for rendering |
-| `render_view(rotation, translation, w, h, fov=60, bg=None, with_depth=False, depth_mode='median')` | `Tensor \| tuple \| None` | Render active scene from camera |
-| `render_view_u8(rotation, translation, w, h, fov=60, bg=None, orthographic=None, ortho_scale=None)` | `Tensor \| None` | Render active scene as CPU uint8 RGB |
-| `render_at(eye, target, w, h, fov=60, up=(0,1,0), bg_color=None)` | `Tensor \| None` | Convenience look-at render |
+| `render_view(rotation, translation, width, height, fov=60, bg_color=None, with_depth=False, depth_mode='median')` | `Tensor \| tuple \| None` | Render active scene from camera |
+| `render_view_u8(rotation, translation, width, height, fov=60, bg_color=None, orthographic=None, ortho_scale=None)` | `Tensor \| None` | Render active scene as CPU uint8 RGB |
+| `render_at(eye, target, width, height, fov=60, up=(0,1,0), bg_color=None)` | `Tensor \| None` | Convenience look-at render |
 | `render_asset_preview(path, width=512, height=224, focal_length_mm=35)` | `Tensor \| None` | Offscreen asset thumbnail without mutating live scene |
 | `render_asset_preview_from_camera(path, eye, target, ...)` | `Tensor \| None` | Offscreen thumbnail from custom camera |
-| `compute_screen_positions(rotation, translation, w, h, fov=60)` | `Tensor` | [N, 2] screen positions |
+| `compute_screen_positions(rotation, translation, width, height, fov=60)` | `Tensor` | [N, 2] screen positions |
 | `get_render_settings()`                               | `RenderSettings` | Current render settings    |
 | `get_render_mode()` / `set_render_mode(mode)`         | `RenderMode`     | Render mode                |
 
@@ -1712,12 +1712,12 @@ For a coarse CUDA memory number in Python plugin code, use
 | `lf.ui.save_json_file_dialog(default_name='config.json')` | `str` |
 | `lf.ui.save_png_file_dialog(default_name='export.png')`   | `str` |
 | `lf.ui.save_jpg_file_dialog(default_name='export.jpg')`   | `str` |
-| `lf.ui.save_ply_file_dialog(default_name='export.ply')`   | `str` |
-| `lf.ui.save_sog_file_dialog(default_name='export.sog')`   | `str` |
-| `lf.ui.save_spz_file_dialog(default_name='export.spz')`   | `str` |
-| `lf.ui.save_usd_file_dialog(default_name='export.usd')`   | `str` |
+| `lf.ui.save_ply_file_dialog(default_name='export')`       | `str` |
+| `lf.ui.save_sog_file_dialog(default_name='export')`       | `str` |
+| `lf.ui.save_spz_file_dialog(default_name='export')`       | `str` |
+| `lf.ui.save_usd_file_dialog(default_name='export')`       | `str` |
 | `lf.ui.save_usdz_file_dialog(default_name='export')`      | `str` |
-| `lf.ui.save_html_file_dialog(default_name='viewer.html')` | `str` |
+| `lf.ui.save_html_file_dialog(default_name='viewer')`      | `str` |
 | `lf.ui.save_rad_file_dialog(default_name='export')`       | `str` |
 
 `lf.ui.open_folder_dialog()` accepts `title` for compatibility with older scripts. The current native dialog backend ignores it.

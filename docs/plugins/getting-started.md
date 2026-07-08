@@ -1017,7 +1017,7 @@ scene.clear_selection()
 ```python
 import lichtfeld as lf
 
-# Get/set a 16-float transform matrix
+# Get/set a 16-float column-major transform matrix
 matrix = lf.get_node_transform("My Splat")
 lf.set_node_transform("My Splat", matrix)
 
