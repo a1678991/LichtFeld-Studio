@@ -36,6 +36,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef RMLUI_DEBUG
@@ -632,9 +633,12 @@ private:
     void DestroyResource_StagingBuffer(const buffer_data_t& data) noexcept;
 
     void Destroy_Textures() noexcept;
+    void Destroy_LiveTextures() noexcept;
     void Destroy_Geometries() noexcept;
 
     void Destroy_Texture(const texture_data_t& p_texture) noexcept;
+    void RegisterLiveTexture(texture_data_t* texture);
+    void UnregisterLiveTexture(texture_data_t* texture);
 
     void DestroyResourcesDependentOnSize() noexcept;
     void DestroySwapchainImageViews() noexcept;
@@ -755,6 +759,7 @@ private:
     Rml::Vector<VkImageLayout> m_swapchain_image_layouts;
     Rml::Vector<VkShaderModule> m_shaders;
     Rml::Array<Rml::Vector<texture_data_t*>, kSwapchainBackBufferCount> m_pending_for_deletion_textures_by_frames;
+    std::unordered_set<texture_data_t*> m_live_textures;
     std::vector<std::shared_ptr<async_preview_state_t>> m_async_preview_textures;
     std::atomic<uint64_t> m_preview_texture_generation{0};
     Rml::Vector<render_layer_t> m_render_layers;

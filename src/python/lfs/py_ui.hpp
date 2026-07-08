@@ -775,6 +775,7 @@ namespace lfs::python {
 
         // Clear hooks for a panel/section
         void clear_hooks(const std::string& panel, const std::string& section = "");
+        void clear_hooks_for_module(const std::string& module_prefix);
 
         // Clear all hooks
         void clear_all();
@@ -805,6 +806,7 @@ namespace lfs::python {
             nb::object callback;
             PyHookPosition position;
             std::string name;
+            std::string module;
         };
 
         mutable std::mutex mutex_;
@@ -910,8 +912,9 @@ namespace lfs::python {
         void show_input(const std::string& title, const std::string& message,
                         const std::string& default_value, nb::object callback);
         void show_message(const std::string& title, const std::string& message,
-                          MessageStyle style = MessageStyle::Info,
-                          nb::object callback = nb::none());
+                          MessageStyle style = MessageStyle::Info);
+        void show_message(const std::string& title, const std::string& message,
+                          MessageStyle style, nb::object callback);
 
         void draw_modals();
 

@@ -307,6 +307,7 @@ RenderInterface_VK::RenderInterface_VK() : m_is_transform_enabled{false},
                                            m_depth_stencil_format{},
                                            m_texture_depthstencil{},
                                            m_pending_for_deletion_textures_by_frames{},
+                                           m_live_textures{},
                                            m_render_layers{},
                                            m_external_swapchain_image{},
                                            m_external_swapchain_image_view{},
@@ -822,6 +823,7 @@ Rml::TextureHandle RenderInterface_VK::SaveLayerAsTexture() {
 
     BeginLayerRendering(static_cast<Rml::LayerHandle>(m_render_layer_stack_size), false);
 
+    RegisterLiveTexture(texture);
     return reinterpret_cast<Rml::TextureHandle>(texture);
 }
 
@@ -857,6 +859,7 @@ Rml::TextureHandle RenderInterface_VK::LoadTexture(Rml::Vector2i& texture_dimens
         texture->m_p_vma_allocation = VK_NULL_HANDLE;
         texture_dimensions.x = vk_request->width;
         texture_dimensions.y = vk_request->height;
+        RegisterLiveTexture(texture);
         return reinterpret_cast<Rml::TextureHandle>(texture);
     }
 
@@ -1108,8 +1111,10 @@ RenderInterface_VK::async_preview_result_t RenderInterface_VK::DecodePreviewText
 }
 
 void RenderInterface_VK::QueueTextureForDeferredDeletion(texture_data_t* texture) {
-    if (texture)
+    if (texture) {
+        UnregisterLiveTexture(texture);
         m_pending_for_deletion_textures_by_frames[ActiveResourceSlot()].push_back(texture);
+    }
 }
 
 void RenderInterface_VK::DropAsyncPreviewTexture(texture_data_t* texture) {
@@ -1164,6 +1169,7 @@ void RenderInterface_VK::ProcessAsyncPreviewUploads() {
                 replacement->m_is_async_preview = true;
                 QueueTextureForDeferredDeletion(new texture_data_t(*state->texture));
                 *state->texture = *replacement;
+                UnregisterLiveTexture(replacement);
                 delete replacement;
                 --uploads_remaining;
                 uploaded_any = true;
@@ -1358,6 +1364,7 @@ Rml::TextureHandle RenderInterface_VK::CreateTexture(Rml::Span<const Rml::byte> 
     p_texture->m_p_vk_image_view = p_image_view;
     p_texture->m_p_vk_sampler = sampler != VK_NULL_HANDLE ? sampler : m_p_sampler_linear;
 
+    RegisterLiveTexture(p_texture);
     return reinterpret_cast<Rml::TextureHandle>(p_texture);
 }
 
@@ -2163,6 +2170,7 @@ void RenderInterface_VK::Destroy_Resources() noexcept {
 
     DestroySamplers();
     Destroy_Textures();
+    Destroy_LiveTextures();
     Destroy_Geometries();
 
     m_manager_descriptors.Shutdown(m_p_device);
@@ -3222,12 +3230,35 @@ void RenderInterface_VK::DestroyResource_StagingBuffer(const buffer_data_t& data
 void RenderInterface_VK::Destroy_Textures() noexcept {
     for (auto& textures : m_pending_for_deletion_textures_by_frames) {
         for (texture_data_t* p_data : textures) {
+            UnregisterLiveTexture(p_data);
             Destroy_Texture(*p_data);
             delete p_data;
         }
 
         textures.clear();
     }
+}
+
+void RenderInterface_VK::Destroy_LiveTextures() noexcept {
+    auto live_textures = std::move(m_live_textures);
+    m_live_textures.clear();
+
+    for (texture_data_t* texture : live_textures) {
+        if (!texture)
+            continue;
+        Destroy_Texture(*texture);
+        delete texture;
+    }
+}
+
+void RenderInterface_VK::RegisterLiveTexture(texture_data_t* texture) {
+    if (texture)
+        m_live_textures.insert(texture);
+}
+
+void RenderInterface_VK::UnregisterLiveTexture(texture_data_t* texture) {
+    if (texture)
+        m_live_textures.erase(texture);
 }
 
 uint32_t RenderInterface_VK::ActiveResourceSlot() const noexcept {

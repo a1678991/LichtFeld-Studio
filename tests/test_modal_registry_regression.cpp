@@ -30,3 +30,14 @@ TEST(PyModalRegistryRegression, ConfirmCallbackCanRegisterNestedModalWithoutLock
 
     registry.clear_for_test();
 }
+
+TEST(PyModalRegistryRegression, MessageWithoutCallbackUsesNativeModalPath) {
+    auto& registry = lfs::python::PyModalRegistry::instance();
+    registry.clear_for_test();
+
+    registry.show_message("Dropped Files", "Unsupported file type", lfs::python::MessageStyle::Error);
+
+    EXPECT_TRUE(registry.has_open_modals());
+
+    registry.clear_for_test();
+}

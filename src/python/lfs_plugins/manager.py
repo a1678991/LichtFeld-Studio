@@ -460,9 +460,17 @@ class PluginManager:
             if not plugin or plugin.state != PluginState.ACTIVE:
                 return False
 
+        module_prefix = f"{MODULE_PREFIX}.{plugin.info.name}"
+        unload_ok = True
+
         try:
             if plugin.module and hasattr(plugin.module, "on_unload"):
-                plugin.module.on_unload()
+                try:
+                    plugin.module.on_unload()
+                except Exception as e:
+                    unload_ok = False
+                    plugin.error = str(e)
+                    _log.exception("Plugin '%s' on_unload failed", name)
 
             CapabilityRegistry.instance().unregister_all_for_plugin(name)
 
@@ -481,11 +489,12 @@ class PluginManager:
 
             try:
                 import lichtfeld as lf
-                lf.ui.unregister_panels_for_module(f"{MODULE_PREFIX}.{plugin.info.name}")
+                lf.ui.unregister_panels_for_module(module_prefix)
+                if hasattr(lf.ui, "clear_hooks_for_module"):
+                    lf.ui.clear_hooks_for_module(module_prefix)
             except Exception:
                 pass
 
-            module_prefix = f"{MODULE_PREFIX}.{plugin.info.name}"
             to_remove = [m for m in sys.modules if m == module_prefix or m.startswith(f"{module_prefix}.")]
             for m in to_remove:
                 sys.modules.pop(m, None)
@@ -509,7 +518,7 @@ class PluginManager:
                 except Exception as cb_err:
                     _log.warning("on_plugin_unloaded callback failed: %s", cb_err)
 
-            return True
+            return unload_ok
 
         except Exception as e:
             plugin.error = str(e)
@@ -532,9 +541,15 @@ class PluginManager:
 
         mem_before = get_gpu_memory()
 
+        module_prefix = f"{MODULE_PREFIX}.{plugin.info.name}"
+
         try:
             if plugin.module and hasattr(plugin.module, "on_unload"):
-                plugin.module.on_unload()
+                try:
+                    plugin.module.on_unload()
+                except Exception as e:
+                    plugin.error = str(e)
+                    _log.exception("Plugin '%s' on_unload failed during reload", name)
 
             CapabilityRegistry.instance().unregister_all_for_plugin(name)
 
@@ -546,11 +561,12 @@ class PluginManager:
 
             try:
                 import lichtfeld as lf
-                lf.ui.unregister_panels_for_module(f"{MODULE_PREFIX}.{plugin.info.name}")
+                lf.ui.unregister_panels_for_module(module_prefix)
+                if hasattr(lf.ui, "clear_hooks_for_module"):
+                    lf.ui.clear_hooks_for_module(module_prefix)
             except Exception:
                 pass
 
-            module_prefix = f"{MODULE_PREFIX}.{plugin.info.name}"
             to_remove = [m for m in sys.modules if m == module_prefix or m.startswith(f"{module_prefix}.")]
             for m in to_remove:
                 sys.modules.pop(m, None)
