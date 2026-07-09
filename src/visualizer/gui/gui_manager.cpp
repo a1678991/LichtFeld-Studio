@@ -5402,9 +5402,8 @@ namespace lfs::vis::gui {
         bool right_panel_pointer_over_active_tab = false;
         if (show_main_panel_ && !ui_hidden_) {
             LOG_TIMER_THRESHOLD("gui_render.panel_setup.rml_right_panel", 0.25);
-            const float sbh = PanelLayoutManager::STATUS_BAR_HEIGHT * current_ui_scale_;
             const float rpw = panel_layout_.getRightPanelWidth();
-            const float ph = screen.work_size.y - sbh;
+            const float ph = screen.work_size.y;
             const float splitter_h = PanelLayoutManager::SPLITTER_H * current_ui_scale_;
             const float tab_bar_h = PanelLayoutManager::TAB_BAR_H * current_ui_scale_;
             const float avail_h = ph - 16.0f;
@@ -5558,14 +5557,13 @@ namespace lfs::vis::gui {
                                            });
         }
 
-        const float status_bar_h = PanelLayoutManager::STATUS_BAR_HEIGHT * current_ui_scale_;
         const float bottom_dock_h = std::max(panel_layout_.getBottomDockHeight(), 0.0f);
         const float bottom_dock_w = show_main_panel_ && !ui_hidden_
                                         ? std::max(0.0f, screen.work_size.x -
                                                              panel_layout_.getRightPanelWidth())
                                         : screen.work_size.x;
         const float bottom_dock_y =
-            screen.work_pos.y + screen.work_size.y - status_bar_h - bottom_dock_h;
+            screen.work_pos.y + screen.work_size.y - bottom_dock_h;
         const float bottom_dock_edge_grab_h =
             std::max(PanelLayoutManager::SPLITTER_H * current_ui_scale_,
                      8.0f * current_ui_scale_);
@@ -5613,8 +5611,7 @@ namespace lfs::vis::gui {
         const float icon_bar_w = ICON_BAR_WIDTH * current_ui_scale_;
         const float left_dock_panel_w = std::max(panel_layout_.getLeftDockWidth(), 0.0f);
         const float left_dock_h = show_main_panel_ && !ui_hidden_
-                                      ? std::max(0.0f, screen.work_size.y -
-                                                           PanelLayoutManager::STATUS_BAR_HEIGHT * current_ui_scale_)
+                                      ? screen.work_size.y
                                       : screen.work_size.y;
         const float left_dock_edge_grab_w =
             std::max(PanelLayoutManager::SPLITTER_H * current_ui_scale_,
@@ -5943,7 +5940,7 @@ namespace lfs::vis::gui {
             const float status_bar_height =
                 PanelLayoutManager::STATUS_BAR_HEIGHT * lfs::python::get_shared_dpi_scale();
             const float status_bar_x = screen.work_pos.x;
-            const float status_bar_y = screen.work_pos.y + screen.work_size.y - status_bar_height;
+            const float status_bar_y = screen.work_pos.y + screen.work_size.y;
             const float status_bar_w = screen.work_size.x;
             const bool status_input =
                 !block_underlay_input &&

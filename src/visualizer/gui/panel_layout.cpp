@@ -97,7 +97,7 @@ namespace lfs::vis::gui {
         }
 
         const float dpi = lfs::python::get_shared_dpi_scale();
-        const float panel_h = screen.work_size.y - STATUS_BAR_HEIGHT * dpi;
+        const float panel_h = screen.work_size.y;
         const float bottom_dock_h = computeBottomDockReservedHeight(show_main_panel, ui_hidden, screen);
         const float max_w = maxRightPanelWidth(show_main_panel, ui_hidden, screen);
         const float min_w = std::min(RIGHT_PANEL_MIN_VISIBLE_WIDTH * dpi, max_w);
@@ -289,7 +289,7 @@ namespace lfs::vis::gui {
         }
 
         const float dpi = lfs::python::get_shared_dpi_scale();
-        const float panel_h = screen.work_size.y - STATUS_BAR_HEIGHT * dpi;
+        const float panel_h = screen.work_size.y;
         const float bottom_dock_h = computeBottomDockReservedHeight(show_main_panel, ui_hidden, screen);
         const float max_w = maxRightPanelWidth(show_main_panel, ui_hidden, screen);
         const float min_w = std::min(RIGHT_PANEL_MIN_VISIBLE_WIDTH * dpi, max_w);
@@ -401,11 +401,10 @@ namespace lfs::vis::gui {
         }
 
         const float dpi = lfs::python::get_shared_dpi_scale();
-        const float status_bar_h = STATUS_BAR_HEIGHT * dpi;
         const float panel_w = computeBottomDockWidth(show_main_panel, ui_hidden, screen);
         const float max_panel_h = std::min(
-            (screen.work_size.y - status_bar_h) * BOTTOM_DOCK_MAX_RATIO,
-            screen.work_size.y - status_bar_h - MIN_VIEWPORT_HEIGHT * dpi);
+            screen.work_size.y * BOTTOM_DOCK_MAX_RATIO,
+            screen.work_size.y - MIN_VIEWPORT_HEIGHT * dpi);
 
         if (panel_w <= 0.0f || max_panel_h <= 0.0f) {
             bottom_dock_hovering_edge_ = false;
@@ -450,7 +449,7 @@ namespace lfs::vis::gui {
 
         const float edge_grab_h = std::max(SPLITTER_H * dpi, 8.0f * dpi);
         float panel_h = bottom_dock_height_;
-        float panel_y = screen.work_pos.y + screen.work_size.y - status_bar_h - panel_h;
+        float panel_y = screen.work_pos.y + screen.work_size.y - panel_h;
 
         bottom_dock_hovering_edge_ =
             !float_blocks_bottom_dock &&
@@ -469,7 +468,7 @@ namespace lfs::vis::gui {
             cursor_request_ = CursorRequest::ResizeNS;
 
         panel_h = bottom_dock_height_;
-        panel_y = screen.work_pos.y + screen.work_size.y - status_bar_h - panel_h;
+        panel_y = screen.work_pos.y + screen.work_size.y - panel_h;
 
         float preloaded_h = 0.0f;
         {
@@ -513,11 +512,10 @@ namespace lfs::vis::gui {
         }
 
         const float dpi = lfs::python::get_shared_dpi_scale();
-        const float status_bar_h = STATUS_BAR_HEIGHT * dpi;
         const float panel_w = computeBottomDockWidth(show_main_panel, ui_hidden, screen);
         const float max_panel_h = std::min(
-            (screen.work_size.y - status_bar_h) * BOTTOM_DOCK_MAX_RATIO,
-            screen.work_size.y - status_bar_h - MIN_VIEWPORT_HEIGHT * dpi);
+            screen.work_size.y * BOTTOM_DOCK_MAX_RATIO,
+            screen.work_size.y - MIN_VIEWPORT_HEIGHT * dpi);
 
         if (panel_w <= 0.0f || max_panel_h <= 0.0f) {
             bottom_dock_hovering_edge_ = false;
@@ -536,7 +534,7 @@ namespace lfs::vis::gui {
             max_panel_h);
 
         const float panel_h = bottom_dock_height_;
-        const float panel_y = screen.work_pos.y + screen.work_size.y - status_bar_h - panel_h;
+        const float panel_y = screen.work_pos.y + screen.work_size.y - panel_h;
         const float drawn_h = reg.draw_panels_direct_cached(PanelSpace::BottomDock,
                                                             screen.work_pos.x,
                                                             panel_y,
@@ -567,8 +565,7 @@ namespace lfs::vis::gui {
 
         const float dpi = lfs::python::get_shared_dpi_scale();
         const float icon_bar_w = ICON_BAR_WIDTH * dpi;
-        const float status_bar_h = STATUS_BAR_HEIGHT * dpi;
-        const float panel_h = screen.work_size.y - status_bar_h;
+        const float panel_h = screen.work_size.y;
         const float max_panel_w = maxLeftDockPanelWidth(show_main_panel, ui_hidden, screen);
 
         if (max_panel_w <= 0.0f) {
@@ -685,8 +682,7 @@ namespace lfs::vis::gui {
 
         const float dpi = lfs::python::get_shared_dpi_scale();
         const float icon_bar_w = ICON_BAR_WIDTH * dpi;
-        const float status_bar_h = STATUS_BAR_HEIGHT * dpi;
-        const float panel_h = screen.work_size.y - status_bar_h;
+        const float panel_h = screen.work_size.y;
         const float max_panel_w = maxLeftDockPanelWidth(show_main_panel, ui_hidden, screen);
 
         if (max_panel_w <= 0.0f) {
@@ -718,7 +714,7 @@ namespace lfs::vis::gui {
     }
 
     void PanelLayoutManager::adjustScenePanelRatio(float delta_y, const ScreenState& screen) {
-        const float panel_h = screen.work_size.y - STATUS_BAR_HEIGHT * lfs::python::get_shared_dpi_scale();
+        const float panel_h = screen.work_size.y;
         const float padding = 16.0f;
         const float avail_h = panel_h - padding;
         if (avail_h > 0)
@@ -850,10 +846,9 @@ namespace lfs::vis::gui {
             return 0.0f;
 
         const float dpi = lfs::python::get_shared_dpi_scale();
-        const float status_bar_h = STATUS_BAR_HEIGHT * dpi;
         const float max_panel_h = std::min(
-            (screen.work_size.y - status_bar_h) * BOTTOM_DOCK_MAX_RATIO,
-            screen.work_size.y - status_bar_h - MIN_VIEWPORT_HEIGHT * dpi);
+            screen.work_size.y * BOTTOM_DOCK_MAX_RATIO,
+            screen.work_size.y - MIN_VIEWPORT_HEIGHT * dpi);
         if (max_panel_h <= 0.0f)
             return 0.0f;
 
@@ -891,7 +886,6 @@ namespace lfs::vis::gui {
         const float h = ui_hidden
                             ? screen.work_size.y
                             : screen.work_size.y -
-                                  STATUS_BAR_HEIGHT * lfs::python::get_shared_dpi_scale() -
                                   computeBottomDockReservedHeight(show_main_panel, ui_hidden, screen);
 
         const float left_w = computeLeftDockReservedWidth(show_main_panel, ui_hidden, screen);
