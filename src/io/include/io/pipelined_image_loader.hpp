@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -19,10 +20,12 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 struct CUstream_st;
 using cudaStream_t = CUstream_st*;
+struct CUevent_st;
 
 namespace lfs::io {
 
@@ -34,7 +37,7 @@ namespace lfs::io {
         constexpr size_t DEFAULT_OUTPUT_QUEUE_SIZE = 4;
         constexpr size_t DEFAULT_IO_THREADS = 2;
         constexpr size_t DEFAULT_COLD_THREADS = 2;
-        constexpr size_t DEFAULT_MAX_CACHE_BYTES = 4ULL * 1024 * 1024 * 1024;
+        constexpr size_t DEFAULT_MAX_CACHE_BYTES = 8ULL * 1024 * 1024 * 1024;
         constexpr float DEFAULT_MIN_FREE_RATIO = 0.2f;
         constexpr int DEFAULT_JPEG_QUALITY = 95;
         constexpr int DEFAULT_BATCH_TIMEOUT_MS = 3;
@@ -82,6 +85,8 @@ namespace lfs::io {
         bool normal_srgb = false;
         bool normal_transform_world_to_camera = false;
         std::array<float, 9> normal_world_to_camera{};
+        int aux_target_width = 0;
+        int aux_target_height = 0;
         MaskParams mask_params;
         bool extract_alpha_as_mask = false;
         MaskParams alpha_mask_params;
@@ -95,6 +100,10 @@ namespace lfs::io {
         cudaStream_t stream = nullptr;
         std::optional<lfs::core::Tensor> depth;  // Optional depth [H,W], float32
         std::optional<lfs::core::Tensor> normal; // Optional normals [3,H,W], float32 in [-1,1]
+        // Depth and normal record readiness on different worker streams, so
+        // each carries its own event; consumers must wait on both.
+        CUevent_st* depth_ready_event = nullptr;
+        CUevent_st* normal_ready_event = nullptr;
     };
 
     class LFS_IO_API PipelinedImageLoader {
@@ -194,6 +203,8 @@ namespace lfs::io {
             bool normal_srgb = false;    // Invert sRGB encoding before decode (only used if is_normal)
             bool normal_transform_world_to_camera = false;
             std::array<float, 9> normal_world_to_camera{};
+            int aux_target_width = 0;
+            int aux_target_height = 0;
             MaskParams mask_params; // Invert/threshold params (only used if is_mask)
             bool alpha_as_mask = false;
             MaskParams alpha_mask_params;
@@ -212,6 +223,8 @@ namespace lfs::io {
             std::optional<lfs::core::Tensor> depth;
             std::optional<lfs::core::Tensor> normal;
             cudaStream_t stream = nullptr;
+            CUevent_st* depth_ready_event = nullptr;
+            CUevent_st* normal_ready_event = nullptr;
             bool mask_expected = false; // True if a mask was requested for this sequence_id
             bool depth_expected = false;
             bool normal_expected = false;
@@ -238,6 +251,23 @@ namespace lfs::io {
                     });
                     if (shutdown_)
                         return false;
+                    queue_.push(std::move(value));
+                }
+                cv_.notify_one();
+                return true;
+            }
+
+            template <typename OnDrop>
+            bool push(T value, OnDrop&& on_drop) {
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    not_full_cv_.wait(lock, [this] {
+                        return shutdown_ || capacity_ == 0 || queue_.size() < capacity_;
+                    });
+                    if (shutdown_) {
+                        on_drop(value);
+                        return false;
+                    }
                     queue_.push(std::move(value));
                 }
                 cv_.notify_one();
@@ -310,7 +340,7 @@ namespace lfs::io {
 
         void prefetch_thread_func();
         void gpu_batch_decode_thread_func();
-        void cold_process_thread_func();
+        void cold_process_thread_func(size_t worker_index);
 
         std::string make_cache_key(const std::filesystem::path& path, const LoadParams& params) const;
         std::filesystem::path get_fs_cache_path(const std::string& cache_key) const;
@@ -328,9 +358,27 @@ namespace lfs::io {
                                  const std::string& cache_key,
                                  void* cuda_stream);
 
+        enum class SidecarKind : uint8_t {
+            Depth,
+            Normal
+        };
+
+        std::string make_sidecar_key(const PrefetchedImage& item, SidecarKind kind) const;
+        void write_sidecar_cache(NvCodecImageLoader& nvcodec,
+                                 const lfs::core::Tensor& tensor,
+                                 const PrefetchedImage& item,
+                                 SidecarKind kind,
+                                 void* cuda_stream);
+        lfs::core::Tensor decode_cached_sidecar(NvCodecImageLoader& nvcodec,
+                                                const PrefetchedImage& item,
+                                                void* cuda_stream);
+        CUevent_st* record_sidecar_ready_event(cudaStream_t stream);
+        std::pair<int, int> sidecar_target_size(const PrefetchedImage& item, int src_w, int src_h) const;
+
         std::shared_ptr<std::vector<uint8_t>> get_from_jpeg_cache(const std::string& cache_key);
         void put_in_jpeg_cache(const std::string& cache_key, std::shared_ptr<std::vector<uint8_t>> data);
         void put_in_jpeg_cache(const std::string& cache_key, std::vector<uint8_t>&& data);
+        void invalidate_cache_entry(const std::string& cache_key);
         void evict_jpeg_cache_if_needed(size_t required_bytes);
 
         // Auxiliary image pairing helpers
@@ -343,12 +391,18 @@ namespace lfs::io {
             std::optional<lfs::core::Tensor> mask,
             cudaStream_t stream,
             std::optional<lfs::core::Tensor> depth = std::nullopt,
-            std::optional<lfs::core::Tensor> normal = std::nullopt);
-        void try_push_ready_locked(size_t sequence_id, PendingPairIterator it);
+            std::optional<lfs::core::Tensor> normal = std::nullopt,
+            CUevent_st* sidecar_ready_event = nullptr);
+        void try_push_ready_locked(size_t sequence_id,
+                                   PendingPairIterator it,
+                                   std::unique_lock<std::mutex>& pending_lock);
         void add_output_ready_bytes(const ReadyImage& ready);
         void release_output_ready_bytes(const ReadyImage& ready);
         void push_output_ready(ReadyImage ready);
         void erase_pending_pair_locked(PendingPairIterator it);
+        void destroy_sidecar_ready_event(CUevent_st*& event);
+        void clear_output_queue();
+        void clear_pending_pairs();
         void reset_pipeline_gpu_bytes();
 
         PipelinedLoaderConfig config_;
@@ -361,6 +415,7 @@ namespace lfs::io {
         // H2D work overlap training instead of serializing on the legacy stream.
         // Images are still stream-synced before handoff (materialized on arrival).
         cudaStream_t decode_stream_ = nullptr;
+        std::vector<cudaStream_t> sidecar_streams_;
 
         ThreadSafeQueue<ImageRequest> prefetch_queue_;
         ThreadSafeQueue<PrefetchedImage> hot_queue_;

@@ -268,6 +268,8 @@ namespace lfs::app {
                         }
                         return 1;
                     }
+                    trainer->shutdown();
+                    static_cast<void>(trainer.release());
                 } else {
                     LOG_INFO("Starting headless training...");
 
@@ -305,9 +307,13 @@ namespace lfs::app {
                         }
                         return 1;
                     }
+                    trainer->shutdown();
+                    static_cast<void>(trainer.release());
                 }
 
                 LOG_INFO("Headless training completed");
+                core::Logger::get().flush();
+                std::_Exit(0);
             }
 
             core::Tensor::shutdown_memory_pool();

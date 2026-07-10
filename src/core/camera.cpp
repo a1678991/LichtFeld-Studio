@@ -173,6 +173,7 @@ namespace lfs::core {
           _camera_height(other._camera_height),
           _image_width(other._image_width),
           _image_height(other._image_height),
+          _image_size_loaded(other._image_size_loaded),
           _world_view_transform(std::move(other._world_view_transform)),
           _cam_position(std::move(other._cam_position)),
           _cached_mask(std::move(other._cached_mask)),
@@ -227,6 +228,7 @@ namespace lfs::core {
             _camera_height = other._camera_height;
             _image_width = other._image_width;
             _image_height = other._image_height;
+            _image_size_loaded = other._image_size_loaded;
             _world_view_transform = std::move(other._world_view_transform);
             _cam_position = std::move(other._cam_position);
             _cached_mask = std::move(other._cached_mask);
@@ -275,6 +277,7 @@ namespace lfs::core {
           _camera_height(other._camera_height),
           _image_width(other._image_width),
           _image_height(other._image_height),
+          _image_size_loaded(other._image_size_loaded),
           _cam_position(other._cam_position),
           _FoVx(other._FoVx),
           _FoVy(other._FoVy) {
@@ -325,6 +328,7 @@ namespace lfs::core {
             const auto shape = image.shape();
             _image_width = shape[2];
             _image_height = shape[1];
+            _image_size_loaded = true;
         }
 
         if (image.device() != Device::CUDA) {
@@ -382,6 +386,7 @@ namespace lfs::core {
         }
 
         LOG_DEBUG("load_image_size(): Final dimensions: {}x{}", _image_width, _image_height);
+        _image_size_loaded = true;
     }
 
     size_t Camera::get_num_bytes_from_file(int resize_factor, int max_width) const {

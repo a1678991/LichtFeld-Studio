@@ -795,6 +795,58 @@ if(TARGET nvjpeg2k_ext)
             "$<TARGET_FILE_DIR:${PROJECT_NAME}>/extensions/"
         COMMENT "Copying nvjpeg2k extension binary only"
     )
+
+    if(WITH_DYNAMIC_NVJPEG2K)
+        if(CUDAToolkit_VERSION_MAJOR)
+            set(_lfs_nvjpeg2k_cuda_major "${CUDAToolkit_VERSION_MAJOR}")
+        else()
+            set(_lfs_nvjpeg2k_cuda_major "12")
+        endif()
+        set(_lfs_nvjpeg2k_runtime_dir
+            "${CMAKE_BINARY_DIR}/_deps/nvjpeg2k_headers-src/lib/${_lfs_nvjpeg2k_cuda_major}")
+        if(WIN32)
+            set(_lfs_nvjpeg2k_runtime_name "nvjpeg2k_0.dll")
+            set(_lfs_nvjpeg2k_runtime_file
+                "${_lfs_nvjpeg2k_runtime_dir}/${_lfs_nvjpeg2k_runtime_name}")
+            if(EXISTS "${_lfs_nvjpeg2k_runtime_file}")
+                add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${_lfs_nvjpeg2k_runtime_file}"
+                        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/${_lfs_nvjpeg2k_runtime_name}"
+                    COMMENT "Copying nvjpeg2k runtime library"
+                )
+            else()
+                message(WARNING
+                    "WITH_DYNAMIC_NVJPEG2K is ON but nvjpeg2k_0.dll was not found in "
+                    "${_lfs_nvjpeg2k_runtime_dir}")
+            endif()
+        elseif(UNIX)
+            file(GLOB _lfs_nvjpeg2k_runtime_candidates
+                "${_lfs_nvjpeg2k_runtime_dir}/libnvjpeg2k.so.*.*")
+            list(SORT _lfs_nvjpeg2k_runtime_candidates)
+            if(_lfs_nvjpeg2k_runtime_candidates)
+                list(GET _lfs_nvjpeg2k_runtime_candidates -1 _lfs_nvjpeg2k_runtime_file)
+                get_filename_component(_lfs_nvjpeg2k_runtime_name
+                    "${_lfs_nvjpeg2k_runtime_file}" NAME)
+                add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${_lfs_nvjpeg2k_runtime_file}"
+                        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/${_lfs_nvjpeg2k_runtime_name}"
+                    COMMAND ${CMAKE_COMMAND} -E create_symlink
+                        "${_lfs_nvjpeg2k_runtime_name}"
+                        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/libnvjpeg2k.so.0"
+                    COMMAND ${CMAKE_COMMAND} -E create_symlink
+                        "libnvjpeg2k.so.0"
+                        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/libnvjpeg2k.so"
+                    COMMENT "Copying nvjpeg2k runtime library"
+                )
+            else()
+                message(WARNING
+                    "WITH_DYNAMIC_NVJPEG2K is ON but no libnvjpeg2k.so runtime was found in "
+                    "${_lfs_nvjpeg2k_runtime_dir}")
+            endif()
+        endif()
+    endif()
 endif()
 
 # =============================================================================
@@ -1290,6 +1342,23 @@ if(TARGET nvimgcodec)
             LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}/extensions"
             RUNTIME DESTINATION "extensions"
         )
+        if(WITH_DYNAMIC_NVJPEG2K AND DEFINED _lfs_nvjpeg2k_runtime_file AND EXISTS "${_lfs_nvjpeg2k_runtime_file}")
+            if(WIN32)
+                install(FILES "${_lfs_nvjpeg2k_runtime_file}" DESTINATION ${CMAKE_INSTALL_BINDIR})
+            elseif(UNIX)
+                install(FILES "${_lfs_nvjpeg2k_runtime_file}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
+                install(CODE "
+                    execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+                        \"${_lfs_nvjpeg2k_runtime_name}\"
+                        \"libnvjpeg2k.so.0\"
+                        WORKING_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}\")
+                    execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+                        \"libnvjpeg2k.so.0\"
+                        \"libnvjpeg2k.so\"
+                        WORKING_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}\")
+                ")
+            endif()
+        endif()
     endif()
 endif()
 

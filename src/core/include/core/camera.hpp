@@ -106,6 +106,7 @@ namespace lfs::core {
 
         // Load image from disk just to populate _image_width/_image_height
         void load_image_size(int resize_factor = -1, int max_width = 0);
+        bool image_size_loaded() const noexcept { return _image_size_loaded; }
 
         // Get number of bytes in the image file
         size_t get_num_bytes_from_file(int resize_factor = -1, int max_width = 0) const;
@@ -139,6 +140,7 @@ namespace lfs::core {
         void set_image_dimensions(int width, int height) noexcept {
             _image_width = width;
             _image_height = height;
+            _image_size_loaded = true;
         }
         int camera_height() const noexcept { return _camera_height; }
         int camera_width() const noexcept { return _camera_width; }
@@ -219,6 +221,7 @@ namespace lfs::core {
         int _camera_height = 0;
         int _image_width = 0;
         int _image_height = 0;
+        bool _image_size_loaded = false;
 
         // GPU tensors (computed on demand)
         Tensor _world_view_transform;

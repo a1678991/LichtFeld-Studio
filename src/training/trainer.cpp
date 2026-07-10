@@ -3390,7 +3390,53 @@ namespace lfs::training {
         }
 
         cudaDeviceSynchronize();
-        clearActiveImageLoader();
+
+        const bool exiting_headless = params_.optimization.headless;
+        if (exiting_headless) {
+            lfs::core::CudaMemoryPool::instance().suspend_deallocations_for_process_exit();
+        }
+
+        if (callback_stream_) {
+            lfs::core::CudaMemoryPool::instance().release_stream(callback_stream_);
+        }
+
+        if (metrics_stream_) {
+            lfs::core::CudaMemoryPool::instance().release_stream(metrics_stream_);
+        }
+
+        if (training_stream_) {
+            lfs::core::CudaMemoryPool::instance().release_stream(training_stream_);
+        }
+
+        if (strategy_) {
+            strategy_->set_image_loader(nullptr);
+        }
+        background_ = {};
+        bg_mix_buffer_ = {};
+        bg_image_base_ = {};
+        bg_image_cache_.clear();
+        random_bg_buffer_ = {};
+        pipelined_mask_ = {};
+        pipelined_depth_ = {};
+        pipelined_normal_ = {};
+        photometric_loss_ = {};
+        loss_accumulator_ = {};
+        depth_loss_scalar_ = {};
+        depth_loss_grad_ = {};
+        depth_loss_grad_alpha_ = {};
+        depth_loss_partials_ = {};
+        normal_loss_scalar_ = {};
+        normal_loss_grad_ = {};
+        normal_loss_partials_ = {};
+        normal_consistency_scalar_ = {};
+        normal_consistency_partials_ = {};
+        normal_prior_depth_scalar_ = {};
+        densification_ssim_workspace_ = {};
+        masked_fused_workspace_ = {};
+        decoupled_fused_workspace_ = {};
+        masked_decoupled_fused_workspace_ = {};
+        densification_error_map_ = {};
+        edge_map_buffer_ = {};
         strategy_.reset();
         bilateral_grid_.reset();
         ppisp_.reset();
@@ -3398,34 +3444,35 @@ namespace lfs::training {
         sparsity_optimizer_.reset();
         evaluator_.reset();
         progress_.reset();
+        base_dataset_.reset();
         train_dataset_.reset();
         val_dataset_.reset();
         setCameraLossHeatmap(nullptr);
+        setActiveImageLoader(nullptr);
 
         if (callback_stream_) {
-            lfs::core::CudaMemoryPool::instance().release_stream(callback_stream_);
             cudaStreamDestroy(callback_stream_);
             callback_stream_ = nullptr;
         }
         callback_busy_ = false;
 
         if (metrics_stream_) {
-            lfs::core::CudaMemoryPool::instance().release_stream(metrics_stream_);
             cudaStreamDestroy(metrics_stream_);
             metrics_stream_ = nullptr;
         }
 
         if (training_stream_) {
             destroySyncPrimitives();
-            lfs::core::CudaMemoryPool::instance().release_stream(training_stream_);
             cudaStreamDestroy(training_stream_);
             training_stream_ = nullptr;
         }
 
-        // Release GPU memory pools back to system
-        lfs::core::Tensor::trim_memory_pool();
-        lfs::core::GlobalArenaManager::instance().get_arena().full_reset();
-        cudaDeviceSynchronize();
+        if (!exiting_headless) {
+            // Release GPU memory pools back to system
+            lfs::core::Tensor::trim_memory_pool();
+            lfs::core::GlobalArenaManager::instance().get_arena().full_reset();
+            cudaDeviceSynchronize();
+        }
         LOG_DEBUG("GPU memory released");
 
         initialized_ = false;
@@ -5626,6 +5673,16 @@ namespace lfs::training {
                 aux_pipeline_config.normal_world_space = normal_prior_world_space_;
                 aux_pipeline_config.normal_srgb = normal_prior_srgb_;
                 aux_pipeline_config.normal_world_rotation = normal_prior_world_rotation_;
+                if (normal_prior_world_space_) {
+                    aux_pipeline_config.normal_world_to_camera_by_source.resize(
+                        train_dataset_->get_cameras().size());
+                    for (size_t i = 0; i < train_dataset_->get_cameras().size(); ++i) {
+                        aux_pipeline_config.normal_world_to_camera_by_source[i] =
+                            camera_world_to_camera_normal_matrix(
+                                *train_dataset_->get_cameras()[i],
+                                normal_prior_world_rotation_);
+                    }
+                }
             }
             if (params_.optimization.mask_mode != lfs::core::param::MaskMode::None) {
                 aux_pipeline_config.invert_masks = params_.optimization.invert_masks;
@@ -5642,6 +5699,27 @@ namespace lfs::training {
                     aux_pipeline_config.load_masks = true;
                     LOG_INFO("Mask file loading enabled (invert={}, threshold={})",
                              aux_pipeline_config.invert_masks, aux_pipeline_config.mask_threshold);
+                }
+            }
+
+            if (aux_pipeline_config.load_depths || aux_pipeline_config.load_normals) {
+                constexpr size_t SIDECAR_COLD_THREAD_LIMIT = 8;
+                constexpr size_t SIDECAR_PREFETCH_COUNT = 16;
+                const size_t hw_threads = std::max<size_t>(1, std::thread::hardware_concurrency());
+                const size_t sidecar_cold_threads =
+                    std::max<size_t>(2, std::min(hw_threads / 2, SIDECAR_COLD_THREAD_LIMIT));
+                if (pipelined_config.cold_process_threads < sidecar_cold_threads) {
+                    LOG_INFO("Depth/normal sidecars active, using {} cold threads", sidecar_cold_threads);
+                    pipelined_config.cold_process_threads = sidecar_cold_threads;
+                }
+                if (pipelined_config.prefetch_count < SIDECAR_PREFETCH_COUNT) {
+                    LOG_INFO("Depth/normal sidecars active, increasing prefetch {} -> {}",
+                             pipelined_config.prefetch_count,
+                             SIDECAR_PREFETCH_COUNT);
+                    pipelined_config.prefetch_count = SIDECAR_PREFETCH_COUNT;
+                    pipelined_config.jpeg_batch_size = std::min(
+                        pipelined_config.jpeg_batch_size,
+                        std::max<size_t>(1, pipelined_config.prefetch_count));
                 }
             }
 
@@ -5669,6 +5747,9 @@ namespace lfs::training {
             }
 
             LOG_DEBUG("Starting training iterations");
+            bool logged_epoch2_loader_cache = false;
+            const size_t epoch2_loader_sample_count =
+                train_dataset_ ? train_dataset_->size() * size_t{2} : size_t{0};
             while (iter <= get_total_iterations()) {
                 lfs::core::Tensor::set_memory_pool_iteration(iter);
 
@@ -5695,10 +5776,39 @@ namespace lfs::training {
                 cam = example.data.camera;
                 gt_image = std::move(example.data.image);
 
+                for (CUevent_st** event : {&example.depth_ready_event, &example.normal_ready_event}) {
+                    if (!*event) {
+                        continue;
+                    }
+                    if (const cudaError_t wait_err = cudaStreamWaitEvent(training_stream_, *event, 0);
+                        wait_err != cudaSuccess) {
+                        LOG_WARN("Failed to wait for sidecar loader event: {}", cudaGetErrorString(wait_err));
+                    }
+                    cudaEventDestroy(*event);
+                    *event = nullptr;
+                }
                 // Store pipelined mask for use in train_step
                 pipelined_mask_ = example.mask.has_value() ? std::move(*example.mask) : lfs::core::Tensor();
                 pipelined_depth_ = example.depth.has_value() ? std::move(*example.depth) : lfs::core::Tensor();
                 pipelined_normal_ = example.normal.has_value() ? std::move(*example.normal) : lfs::core::Tensor();
+                if (pipelined_depth_.is_valid()) {
+                    pipelined_depth_.set_stream(training_stream_);
+                }
+                if (pipelined_normal_.is_valid()) {
+                    pipelined_normal_.set_stream(training_stream_);
+                }
+
+                if (!logged_epoch2_loader_cache && epoch2_loader_sample_count > 0 &&
+                    static_cast<size_t>(iter) >= epoch2_loader_sample_count) {
+                    const auto stats = train_dataloader->get_stats();
+                    LOG_INFO("[PipelinedImageLoader] after epoch 2: {} compressed entries, {:.1f} MiB RAM, "
+                             "{} hits, {} misses",
+                             stats.jpeg_cache_entries,
+                             stats.jpeg_cache_bytes / (1024.0 * 1024.0),
+                             stats.hot_path_hits,
+                             stats.cold_path_misses);
+                    logged_epoch2_loader_cache = true;
+                }
 
                 if (memory_breakdown_enabled_ && !memory_breakdown_logged_first_batch_) {
                     const auto snapshot = capture_vram_snapshot(true);

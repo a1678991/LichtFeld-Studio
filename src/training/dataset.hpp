@@ -182,6 +182,8 @@ namespace lfs::training {
         std::optional<lfs::core::Tensor> mask = {};   // Optional mask [H,W], float32
         std::optional<lfs::core::Tensor> depth = {};  // Optional depth [H,W], float32
         std::optional<lfs::core::Tensor> normal = {}; // Optional normals [3,H,W], float32 in [-1,1]
+        CUevent_st* depth_ready_event = nullptr;
+        CUevent_st* normal_ready_event = nullptr;
     };
 
     /// Camera dataset configuration
@@ -549,6 +551,7 @@ namespace lfs::training {
         bool normal_srgb = false;        // Normal priors are sRGB-encoded (invert before decode)
         // Prior-world -> reconstruction-world rotation (row-major), identity unless resolved otherwise
         std::array<float, 9> normal_world_rotation{1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+        std::vector<std::array<float, 9>> normal_world_to_camera_by_source;
         bool invert_masks = false;      // Invert mask values (1.0 - mask)
         float mask_threshold = 0.0f;    // If > 0, values >= threshold become 1.0
         bool use_alpha_as_mask = false; // Extract alpha channel from RGBA as mask
@@ -604,7 +607,13 @@ namespace lfs::training {
                 CameraExample example{
                     CameraWithImage{cam.get(), std::move(ready.tensor)},
                     lfs::core::Tensor(),
-                    std::nullopt};
+                    std::nullopt,
+                    std::nullopt,
+                    std::nullopt,
+                    ready.depth_ready_event,
+                    ready.normal_ready_event};
+                ready.depth_ready_event = nullptr;
+                ready.normal_ready_event = nullptr;
 
                 // Attach mask if present
                 if (ready.mask && ready.mask->is_valid()) {
@@ -684,6 +693,14 @@ namespace lfs::training {
                 request.params.resize_factor = dataset_->get_resize_factor();
                 request.params.max_width = dataset_->get_max_width();
                 request.params.output_uint8 = !config_.use_16bit_color;
+                if (!cam->image_size_loaded() ||
+                    (dataset_->get_max_width() > 0 &&
+                     (cam->image_height() > dataset_->get_max_width() ||
+                      cam->image_width() > dataset_->get_max_width()))) {
+                    cam->load_image_size(dataset_->get_resize_factor(), dataset_->get_max_width());
+                }
+                request.aux_target_width = cam->image_width();
+                request.aux_target_height = cam->image_height();
                 if (cam->is_undistort_prepared()) {
                     request.undistort = &cam->undistort_params();
                     request.params.undistort = request.undistort;
@@ -707,8 +724,13 @@ namespace lfs::training {
                     request.normal_srgb = aux_config_.normal_srgb;
                     request.normal_transform_world_to_camera = aux_config_.normal_world_space;
                     if (aux_config_.normal_world_space) {
-                        request.normal_world_to_camera = camera_world_to_camera_normal_matrix(
-                            *cam, aux_config_.normal_world_rotation);
+                        if (camera_idx < aux_config_.normal_world_to_camera_by_source.size()) {
+                            request.normal_world_to_camera =
+                                aux_config_.normal_world_to_camera_by_source[camera_idx];
+                        } else {
+                            request.normal_world_to_camera = camera_world_to_camera_normal_matrix(
+                                *cam, aux_config_.normal_world_rotation);
+                        }
                     }
                 }
 
