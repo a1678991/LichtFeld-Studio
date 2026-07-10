@@ -2152,6 +2152,13 @@ namespace lfs::io {
                 has_colors = true;
             } catch (...) {}
 
+            std::shared_ptr<tinyply::PlyData> normals;
+            bool has_normals = false;
+            try {
+                normals = ply.request_properties_from_element("vertex", {"nx", "ny", "nz"});
+                has_normals = true;
+            } catch (...) {}
+
             throw_if_load_cancel_requested(options, "PLY read cancelled");
             ply.read(file);
             throw_if_load_cancel_requested(options, "PLY read cancelled");
@@ -2193,8 +2200,29 @@ namespace lfs::io {
                 color_tensor = Tensor::full({N, 3}, DEFAULT_COLOR, Device::CPU, DataType::UInt8);
             }
 
+            Tensor normal_tensor;
+            if (has_normals && normals && normals->count == N) {
+                normal_tensor = Tensor::zeros({N, 3}, Device::CPU, DataType::Float32);
+                float* const normal_ptr = normal_tensor.ptr<float>();
+                if (normals->t == tinyply::Type::FLOAT32) {
+                    std::memcpy(normal_ptr, normals->buffer.get(), N * 3 * sizeof(float));
+                } else if (normals->t == tinyply::Type::FLOAT64) {
+                    const auto* src = reinterpret_cast<const double*>(normals->buffer.get());
+                    for (size_t i = 0; i < N * 3; ++i) {
+                        if ((i % 4096) == 0) {
+                            throw_if_load_cancel_requested(options, "PLY normal conversion cancelled");
+                        }
+                        normal_ptr[i] = static_cast<float>(src[i]);
+                    }
+                } else {
+                    normal_tensor = Tensor();
+                }
+            }
+
             throw_if_load_cancel_requested(options, "PLY point cloud load cancelled");
-            return PointCloud(std::move(positions), std::move(color_tensor));
+            PointCloud point_cloud(std::move(positions), std::move(color_tensor));
+            point_cloud.normals = std::move(normal_tensor);
+            return point_cloud;
         } catch (const LoadCancelledError& e) {
             return std::unexpected(std::string(e.what()));
         } catch (const std::exception& e) {
