@@ -207,6 +207,7 @@ set(TEST_FILES
     test_mask_loss.cpp
     test_checkpoint_resume.cpp
     test_argument_parser.cpp
+    test_method_registry.cpp
     test_logger.cpp
     test_parameter_manager.cpp
     test_mcp_protocol.cpp

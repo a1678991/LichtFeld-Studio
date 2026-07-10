@@ -234,6 +234,9 @@ namespace {
             // =============================================================================
             ::args::Group training_sep(parser, " ");
             ::args::Group training_group(parser, "TRAINING PARAMETERS:");
+            ::args::ValueFlag<std::string> method(training_group, "id", "Training method (default: 3dgs)", {"method"});
+            ::args::ValueFlagList<std::string> method_options(training_group, "key=value", "Method option; may be repeated", {"method-opt"});
+            ::args::ValueFlag<std::string> method_help(training_group, "id", "Show help for a training method and exit", {"method-help"});
             ::args::ValueFlag<uint32_t> iterations(training_group, "iterations", "Number of iterations", {'i', "iter"});
             ::args::ValueFlag<std::string> strategy(training_group, "strategy", "Optimization strategy: mcmc, mrnf, igs+ (legacy aliases: mnrf, lfs)", {"strategy"});
             ::args::ValueFlag<int> sh_degree(training_group, "sh_degree", "Max SH degree [0-3]", {"sh-degree"});
@@ -429,6 +432,24 @@ namespace {
             // Check if explicitly displaying help
             if (help) {
                 return std::make_tuple(ParseResult::Help, std::function<void()>{});
+            }
+
+            if (method) {
+                params.method = ::args::get(method);
+            }
+            if (method_help) {
+                params.method_help = ::args::get(method_help);
+            }
+            if (method_options) {
+                for (const auto& option : ::args::get(method_options)) {
+                    const auto separator = option.find('=');
+                    if (separator == std::string::npos || separator == 0) {
+                        return std::unexpected(std::format(
+                            "Parse error: --method-opt expects key=value, got '{}'", option));
+                    }
+                    params.method_opts.emplace_back(
+                        option.substr(0, separator), option.substr(separator + 1));
+                }
             }
 
             // NO ARGUMENTS = VIEWER MODE (empty)

@@ -1818,6 +1818,14 @@ namespace lfs::vis {
 
     std::expected<std::filesystem::path, std::string> VisualizerImpl::saveCheckpoint(
         const std::optional<std::filesystem::path>& path) {
+        if (trainer_manager_ && trainer_manager_->hasTrainer() &&
+            !trainer_manager_->getTrainer()) {
+            const auto error = std::format(
+                "Method '{}' does not support host checkpoints",
+                trainer_manager_->activeMethodId());
+            LOG_WARN("{}", error);
+            return std::unexpected(error);
+        }
         if (!trainer_manager_ || !trainer_manager_->getTrainer())
             return std::unexpected("No active training session");
 
