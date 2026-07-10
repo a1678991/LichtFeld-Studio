@@ -8,11 +8,14 @@
 #include "core/parameters.hpp"
 #include "core/splat_data.hpp"
 #include "core/tensor.hpp"
+#include <expected>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -101,6 +104,9 @@ namespace lfs::training {
     // Main evaluator class that handles all metrics computation and visualization
     class MetricsEvaluator {
     public:
+        using RenderCallback = std::function<std::expected<lfs::core::Tensor, std::string>(
+            lfs::core::Camera&)>;
+
         explicit MetricsEvaluator(const lfs::core::param::TrainingParameters& params);
 
         // Check if evaluation is enabled
@@ -114,6 +120,12 @@ namespace lfs::training {
                              const lfs::core::SplatData& splatData,
                              std::shared_ptr<CameraDataset> val_dataset,
                              lfs::core::Tensor& background);
+        // Method-agnostic image evaluation. The callback returns a CUDA CHW RGB
+        // image; callers normalize method-specific camera contracts before returning.
+        EvalMetrics evaluate(const int iteration,
+                             std::shared_ptr<CameraDataset> val_dataset,
+                             std::optional<std::size_t> primitive_count,
+                             const RenderCallback& render_camera);
 
         // Save final report
         void save_report() const {

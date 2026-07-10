@@ -18,9 +18,11 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace lfs::training {
 
@@ -470,12 +472,54 @@ namespace lfs::training {
                                            const lfs::core::SplatData& splatData,
                                            std::shared_ptr<CameraDataset> val_dataset,
                                            lfs::core::Tensor& background) {
+        const RenderCallback render_camera =
+            [this, &splatData, &background](lfs::core::Camera& camera)
+            -> std::expected<lfs::core::Tensor, std::string> {
+            auto& splat_data_mutable = const_cast<lfs::core::SplatData&>(splatData);
+            RenderOutput output;
+            if (_params.optimization.gut) {
+                output = gsplat_rasterize(camera,
+                                          splat_data_mutable,
+                                          background,
+                                          1.0F,
+                                          false,
+                                          GsplatRenderMode::RGB,
+                                          true);
+            } else {
+                output = fast_rasterize(camera,
+                                        splat_data_mutable,
+                                        background,
+                                        _params.optimization.mip_filter);
+            }
+            if (!output.image.is_valid()) {
+                return std::unexpected("rasterizer returned no image");
+            }
+            return std::move(output.image);
+        };
+        return evaluate(iteration, std::move(val_dataset), splatData.size(), render_camera);
+    }
+
+    EvalMetrics MetricsEvaluator::evaluate(const int iteration,
+                                           std::shared_ptr<CameraDataset> val_dataset,
+                                           const std::optional<std::size_t> primitive_count,
+                                           const RenderCallback& render_camera) {
         if (!_params.optimization.enable_eval) {
             throw std::runtime_error("Evaluation is not enabled");
         }
+        if (!val_dataset) {
+            throw std::runtime_error("Evaluation requires a validation dataset");
+        }
+        if (!render_camera) {
+            throw std::runtime_error("Evaluation requires a render callback");
+        }
 
         EvalMetrics result;
-        result.num_gaussians = static_cast<int>(splatData.size());
+        constexpr auto max_int = static_cast<std::size_t>(std::numeric_limits<int>::max());
+        result.num_gaussians = primitive_count
+                                   ? (*primitive_count > max_int
+                                          ? std::numeric_limits<int>::max()
+                                          : static_cast<int>(*primitive_count))
+                                   : 0;
         result.iteration = iteration;
 
         std::vector<float> psnr_values, ssim_values;
@@ -530,21 +574,21 @@ namespace lfs::training {
                 }
             }
 
-            auto& splatData_mutable = const_cast<lfs::core::SplatData&>(splatData);
-            RenderOutput r_output;
-            if (_params.optimization.gut) {
-                r_output = gsplat_rasterize(*cam, splatData_mutable, background,
-                                            1.0f, false, GsplatRenderMode::RGB, true);
-            } else {
-                r_output = fast_rasterize(*cam, splatData_mutable, background, _params.optimization.mip_filter);
+            auto rendered = render_camera(*cam);
+            if (!rendered || !rendered->is_valid()) {
+                LOG_WARN("Eval: skipping camera '{}' (render callback failed: {})",
+                         cam->image_name(),
+                         rendered ? "no image" : rendered.error());
+                skipped_images++;
+                continue;
             }
-            r_output.image = r_output.image.clamp(0.0f, 1.0f);
+            lfs::core::Tensor rendered_image = std::move(*rendered).clamp(0.0F, 1.0F);
 
             float psnr = 0.0f;
             float ssim = 0.0f;
             try {
-                psnr = _psnr_metric->compute(r_output.image, gt_image, mask);
-                ssim = _ssim_metric->compute(r_output.image, gt_image, mask);
+                psnr = _psnr_metric->compute(rendered_image, gt_image, mask);
+                ssim = _ssim_metric->compute(rendered_image, gt_image, mask);
             } catch (const std::exception& e) {
                 LOG_WARN("Eval: skipping camera '{}' (metric computation failed: {})", cam->image_name(), e.what());
                 skipped_images++;
@@ -564,7 +608,7 @@ namespace lfs::training {
 
             if (_params.optimization.enable_save_eval_images) {
                 auto gt_vis = image_as_float01(gt_image);
-                auto render_vis = r_output.image;
+                auto render_vis = rendered_image;
                 if (mask.is_valid()) {
                     auto mask_f = mask_as_float01(mask);
                     const int C = static_cast<int>(gt_image.shape()[0]);
@@ -572,7 +616,7 @@ namespace lfs::training {
                     const int W = static_cast<int>(mask_f.shape()[1]);
                     auto mask_3d = mask_f.unsqueeze(0).expand({C, H, W});
                     gt_vis = gt_vis * mask_3d;
-                    render_vis = r_output.image * mask_3d;
+                    render_vis = rendered_image * mask_3d;
                 }
                 const std::vector<lfs::core::Tensor> rgb_images = {gt_vis, render_vis};
                 lfs::core::image_io::save_images_async(

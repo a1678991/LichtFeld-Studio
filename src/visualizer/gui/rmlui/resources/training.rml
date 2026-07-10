@@ -51,6 +51,22 @@
     <span class="status-text status-success" data-if="show_checkpoint_saved">{{label_checkpoint_saved}}</span>
   </div>
 
+  <!-- ── External method summary ── -->
+  <div data-if="show_method_parameters">
+    <div class="training-panel-title">
+      <img class="training-panel-title-icon" src="../icon/settings.png" />
+      <span>{{method_display_name}}</span>
+    </div>
+    <div class="training-panel-block">
+      <div data-for="option : method_option_lines">
+        <div class="setting-row">
+          <span class="text-disabled">{{option}}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div data-if="show_3dgs_parameters">
   <!-- ── Training Parameters ── -->
   <div class="training-panel-title">
     <img class="training-panel-title-icon" src="../icon/settings.png" />
@@ -624,6 +640,7 @@
         </div>
       </div>
     </div>
+  </div>
   </div>
 
   <!-- ── Status Section ────────────────────────────────── -->
