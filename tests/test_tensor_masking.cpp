@@ -229,6 +229,32 @@ TEST_F(TensorMaskingTest, MaskedSelectEmpty) {
     EXPECT_EQ(selected_torch.numel(), 0);
 }
 
+TEST_F(TensorMaskingTest, MaskedSelectInt64PreservesValues) {
+    std::vector<int64_t> data = {
+        4'294'967'297LL,
+        -8'589'934'590LL,
+        17'179'869'187LL,
+        -34'359'738'364LL,
+    };
+    const std::vector<bool> mask_data = {true, false, true, false};
+    const std::vector<int64_t> expected = {data[0], data[2]};
+
+    for (const Device device : {Device::CPU, Device::CUDA}) {
+        SCOPED_TRACE(device_name(device));
+        auto input = Tensor::from_blob(data.data(), {data.size()}, Device::CPU, DataType::Int64).clone();
+        auto mask = Tensor::from_vector(mask_data, {mask_data.size()}, Device::CPU);
+        if (device == Device::CUDA) {
+            input = input.to(Device::CUDA);
+            mask = mask.to(Device::CUDA);
+        }
+
+        const auto selected = input.masked_select(mask);
+        ASSERT_TRUE(selected.is_valid());
+        EXPECT_EQ(selected.dtype(), DataType::Int64);
+        EXPECT_EQ(selected.to_vector_int64(), expected);
+    }
+}
+
 // ============= Masked Fill Tests =============
 
 TEST_F(TensorMaskingTest, MaskedFillInplace) {

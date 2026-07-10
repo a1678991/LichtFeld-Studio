@@ -41,6 +41,16 @@ namespace lfs::core {
                 }
             }
         }
+
+        template <typename T>
+        void masked_select_cpu(const T* input, const unsigned char* mask, T* output, size_t n) {
+            size_t write_idx = 0;
+            for (size_t i = 0; i < n; ++i) {
+                if (mask[i]) {
+                    output[write_idx++] = input[i];
+                }
+            }
+        }
     } // namespace
 
     // ============= Masking Operations =============
@@ -82,25 +92,49 @@ namespace lfs::core {
 
         if (device_ == Device::CUDA) {
             result.set_stream(stream());
-            // Use CUDA kernel
-            tensor_ops::launch_masked_select(ptr<float>(), mask.ptr<unsigned char>(),
-                                             result.ptr<float>(), numel(), output_size, stream());
+            switch (dtype_) {
+            case DataType::Float32:
+                tensor_ops::launch_masked_select(ptr<float>(), mask.ptr<unsigned char>(),
+                                                 result.ptr<float>(), numel(), output_size, stream());
+                break;
+            case DataType::Float16:
+                tensor_ops::launch_masked_select(ptr<__half>(), mask.ptr<unsigned char>(),
+                                                 result.ptr<__half>(), numel(), output_size, stream());
+                break;
+            case DataType::Int32:
+                tensor_ops::launch_masked_select(ptr<int32_t>(), mask.ptr<unsigned char>(),
+                                                 result.ptr<int32_t>(), numel(), output_size, stream());
+                break;
+            case DataType::Int64:
+                tensor_ops::launch_masked_select(ptr<int64_t>(), mask.ptr<unsigned char>(),
+                                                 result.ptr<int64_t>(), numel(), output_size, stream());
+                break;
+            case DataType::UInt8:
+            case DataType::Bool:
+                tensor_ops::launch_masked_select(ptr<uint8_t>(), mask.ptr<unsigned char>(),
+                                                 result.ptr<uint8_t>(), numel(), output_size, stream());
+                break;
+            }
             // No sync - tensor operation
         } else {
-            // CPU implementation - FIXED to respect mask
-            const float* src = ptr<float>();
-            const unsigned char* mask_data = mask.ptr<unsigned char>();
-            float* dst = result.ptr<float>();
-
-            size_t write_idx = 0;
-            for (size_t i = 0; i < numel(); ++i) {
-                // Only copy when mask is TRUE
-                if (mask_data[i]) {
-                    dst[write_idx++] = src[i];
-                }
+            switch (dtype_) {
+            case DataType::Float32:
+                masked_select_cpu(ptr<float>(), mask.ptr<unsigned char>(), result.ptr<float>(), numel());
+                break;
+            case DataType::Float16:
+                masked_select_cpu(ptr<__half>(), mask.ptr<unsigned char>(), result.ptr<__half>(), numel());
+                break;
+            case DataType::Int32:
+                masked_select_cpu(ptr<int32_t>(), mask.ptr<unsigned char>(), result.ptr<int32_t>(), numel());
+                break;
+            case DataType::Int64:
+                masked_select_cpu(ptr<int64_t>(), mask.ptr<unsigned char>(), result.ptr<int64_t>(), numel());
+                break;
+            case DataType::UInt8:
+            case DataType::Bool:
+                masked_select_cpu(ptr<uint8_t>(), mask.ptr<unsigned char>(), result.ptr<uint8_t>(), numel());
+                break;
             }
-
-            LOG_DEBUG("masked_select CPU: wrote {} elements", write_idx);
         }
 
         return result;
