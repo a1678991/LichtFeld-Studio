@@ -11,6 +11,7 @@
 #include <limits>
 
 // Thrust headers
+#include "core/assert.hpp"
 #include <thrust/copy.h>
 #include <thrust/count.h>
 #include <thrust/device_ptr.h>
@@ -549,11 +550,14 @@ namespace lfs::core::tensor_ops {
         else if (boundary == 2)
             sel = ((sel % (int)dim_size) + dim_size) % dim_size;
         else if (sel < 0 || sel >= dim_size) {
+            LFS_DEBUG_ASSERT(sel >= 0 && sel < static_cast<int>(dim_size));
             out[tid] = 0;
             return;
         }
 
-        out[tid] = in[o * dim_size * inner + sel * inner + j];
+        const size_t src_idx = o * dim_size * inner + static_cast<size_t>(sel) * inner + j;
+        LFS_DEBUG_ASSERT(src_idx < outer * dim_size * inner);
+        out[tid] = in[src_idx];
     }
 
     // Float32 overload
@@ -733,6 +737,7 @@ namespace lfs::core::tensor_ops {
         } else if (boundary == 2) {
             gather_idx = ((gather_idx % (int)in_shape[dim]) + in_shape[dim]) % in_shape[dim];
         } else if (gather_idx < 0 || gather_idx >= in_shape[dim]) {
+            LFS_DEBUG_ASSERT(gather_idx >= 0 && gather_idx < static_cast<int>(in_shape[dim]));
             out[tid] = 0;
             return;
         }
@@ -749,6 +754,7 @@ namespace lfs::core::tensor_ops {
             }
 
             if (coord >= in_shape[d]) {
+                LFS_DEBUG_ASSERT(coord < in_shape[d]);
                 out[tid] = 0;
                 return;
             }
@@ -756,12 +762,20 @@ namespace lfs::core::tensor_ops {
             src_idx += coord * in_strides[d];
         }
 
+        size_t input_elements = 1;
+        for (size_t d = 0; d < in_rank; ++d) {
+            input_elements *= in_shape[d];
+        }
+        LFS_DEBUG_ASSERT(src_idx < input_elements);
         out[tid] = in[src_idx];
     }
 
     void launch_gather(const float* in, const int* idx, float* out,
                        const size_t* in_shape, const size_t* idx_shape,
                        size_t rank, int dim, size_t total, int boundary, cudaStream_t stream) {
+        if (total == 0) {
+            return;
+        }
         CudaDeviceMemory<size_t> d_in_shape(10);
         CudaDeviceMemory<size_t> d_idx_shape(10);
 
@@ -811,6 +825,9 @@ namespace lfs::core::tensor_ops {
     void launch_gather(const int64_t* in, const int* idx, int64_t* out,
                        const size_t* in_shape, const size_t* idx_shape,
                        size_t rank, int dim, size_t total, int boundary, cudaStream_t stream) {
+        if (total == 0) {
+            return;
+        }
         CudaDeviceMemory<size_t> d_in_shape(10);
         CudaDeviceMemory<size_t> d_idx_shape(10);
 
@@ -919,10 +936,13 @@ namespace lfs::core::tensor_ops {
         size_t inner_idx = tid % inner;
 
         int scatter_idx = idx[idx_pos];
-        if (scatter_idx < 0 || scatter_idx >= dim_sz)
+        if (scatter_idx < 0 || scatter_idx >= dim_sz) {
+            LFS_DEBUG_ASSERT(scatter_idx >= 0 && scatter_idx < static_cast<int>(dim_sz));
             return;
+        }
 
         size_t dst_idx = outer_idx * dim_sz * inner + scatter_idx * inner + inner_idx;
+        LFS_DEBUG_ASSERT(dst_idx < outer * dim_sz * inner);
 
         if (mode == 1) {
             scatter_add(&out[dst_idx], in[tid]);

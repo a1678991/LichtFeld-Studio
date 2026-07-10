@@ -156,6 +156,35 @@ file(WRITE "${CMAKE_BINARY_DIR}/include/git_version.h"
 #define GIT_TAGGED_VERSION \"${GIT_TAGGED_VERSION}\"\n"
 )
 
+# App/core ABI tripwire. Hash every lfs_core implementation and interface input,
+# because a dirty-worktree rebuild cannot rely on the Git commit alone to
+# distinguish a newly linked app from a stale shared library.
+file(GLOB_RECURSE LFS_CORE_BUILD_INPUTS CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/core/*.cpp"
+    "${CMAKE_SOURCE_DIR}/src/core/*.cu"
+    "${CMAKE_SOURCE_DIR}/src/core/*.cuh"
+    "${CMAKE_SOURCE_DIR}/src/core/*.hpp"
+)
+list(APPEND LFS_CORE_BUILD_INPUTS
+    "${CMAKE_SOURCE_DIR}/src/core/CMakeLists.txt"
+)
+list(SORT LFS_CORE_BUILD_INPUTS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${LFS_CORE_BUILD_INPUTS}
+)
+set(_lfs_core_abi_material
+    "${PROJECT_VERSION}|${GIT_COMMIT_HASH_SHORT}|${CMAKE_BUILD_TYPE}|${CMAKE_SYSTEM_NAME}|${CMAKE_SIZEOF_VOID_P}|${CMAKE_CXX_COMPILER_ID}|${CMAKE_CXX_COMPILER_VERSION}|${CMAKE_CUDA_COMPILER_ID}|${CMAKE_CUDA_COMPILER_VERSION}|${CMAKE_CUDA_ARCHITECTURES}|${VCPKG_TARGET_TRIPLET}")
+foreach(_lfs_core_build_input IN LISTS LFS_CORE_BUILD_INPUTS)
+    file(SHA256 "${_lfs_core_build_input}" _lfs_core_build_input_hash)
+    string(APPEND _lfs_core_abi_material "|${_lfs_core_build_input_hash}")
+endforeach()
+string(SHA256 LFS_CORE_ABI_STAMP "${_lfs_core_abi_material}")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/lfs_core_abi_stamp.h.in"
+    "${CMAKE_BINARY_DIR}/include/lfs_core_abi_stamp.h"
+    @ONLY
+)
+
 # Setup
 get_filename_component(PROJ_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
 

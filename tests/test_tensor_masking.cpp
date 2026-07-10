@@ -1795,15 +1795,14 @@ TEST_F(TensorMaskingTest, ErrorHandlingMismatchedShapes) {
     auto tensor_custom = Tensor::from_vector(data, {2, 2}, Device::CUDA);
     auto wrong_mask_custom = Tensor::ones_bool({3, 3}, Device::CUDA);
 
-    // This should fail gracefully
-    auto result_custom = tensor_custom.masked_select(wrong_mask_custom);
+    EXPECT_THROW((void)tensor_custom.masked_select(wrong_mask_custom),
+                 std::runtime_error);
 
     // PyTorch also fails with mismatched shapes
     auto tensor_torch = torch::tensor({1.0f, 2.0f, 3.0f, 4.0f}, torch::kCUDA).reshape({2, 2});
     auto wrong_mask_torch = torch::ones({3, 3}, torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
 
     EXPECT_THROW(tensor_torch.masked_select(wrong_mask_torch), c10::Error);
-    EXPECT_FALSE(result_custom.is_valid());
 }
 
 TEST_F(TensorMaskingTest, ErrorHandlingWrongDevice) {
@@ -1811,15 +1810,14 @@ TEST_F(TensorMaskingTest, ErrorHandlingWrongDevice) {
     auto cuda_tensor_custom = Tensor::from_vector(data, {2, 2}, Device::CUDA);
     auto cpu_mask_custom = Tensor::ones_bool({2, 2}, Device::CPU);
 
-    // This should fail gracefully
-    auto result_custom = cuda_tensor_custom.masked_select(cpu_mask_custom);
+    EXPECT_THROW((void)cuda_tensor_custom.masked_select(cpu_mask_custom),
+                 std::runtime_error);
 
     // PyTorch also fails with wrong device
     auto cuda_tensor_torch = torch::tensor({1.0f, 2.0f, 3.0f, 4.0f}, torch::kCUDA).reshape({2, 2});
     auto cpu_mask_torch = torch::ones({2, 2}, torch::TensorOptions().dtype(torch::kBool).device(torch::kCPU));
 
     EXPECT_THROW(cuda_tensor_torch.masked_select(cpu_mask_torch), c10::Error);
-    EXPECT_FALSE(result_custom.is_valid());
 }
 
 // ============= Additional Edge Cases =============

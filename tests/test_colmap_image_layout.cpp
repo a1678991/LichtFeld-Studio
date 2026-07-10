@@ -313,12 +313,9 @@ TEST_F(ColmapImageLayoutTest, FailsWhenDuplicateNestedImagesAreReferencedByBasen
     write_png(image_a);
     write_png(image_b);
 
-    auto result =
-        lfs::io::read_colmap_cameras_and_images_text(dataset_dir, "images");
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, lfs::io::ErrorCode::INVALID_DATASET);
-    EXPECT_NE(result.error().message.find("basename only"), std::string::npos);
-    EXPECT_NE(result.error().message.find("relative image path"), std::string::npos);
+    EXPECT_THROW(
+        (void)lfs::io::read_colmap_cameras_and_images_text(dataset_dir, "images"),
+        std::runtime_error);
 }
 
 TEST_F(ColmapImageLayoutTest, ValidationFailsWhenDuplicateBasenameWasCollapsedInMetadata) {
