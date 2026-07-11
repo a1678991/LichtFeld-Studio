@@ -15,16 +15,22 @@ on:
         description: Release tag (defaults to fork-<date>-<short sha>)
         required: false
         type: string
+      build_windows:
+        description: Build the Windows package
+        required: false
+        type: boolean
+        default: true
+      build_linux:
+        description: Build the Linux package
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-concurrency:
-  group: fork-release-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   create-release:
@@ -60,6 +66,7 @@ jobs:
 
   build-linux:
     needs: create-release
+    if: inputs.build_linux
     runs-on: ubuntu-24.04
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu24.04
@@ -220,6 +227,7 @@ jobs:
         run: cmake --build build -j $(nproc)
 
       - name: Package
+        shell: bash
         env:
           TAG: ${{ needs.create-release.outputs.tag }}
         run: |
@@ -232,6 +240,7 @@ jobs:
           df -h
 
       - name: Upload release asset
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.create-release.outputs.tag }}
@@ -242,6 +251,7 @@ jobs:
 
   build-windows:
     needs: create-release
+    if: inputs.build_windows
     runs-on: windows-2022
     env:
       VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
