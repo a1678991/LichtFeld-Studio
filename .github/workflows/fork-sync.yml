@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Fork-only workflow: monthly, rebase this fork's master (upstream master +
+# fork-only CI commits) onto upstream MrNeRF/LichtFeld-Studio master, force-push,
+# and trigger fork-release.yml to publish fresh Windows/Linux packages.
+
+name: Fork Monthly Sync and Release
+
+on:
+  schedule:
+    - cron: '0 2 1 * *'  # 02:00 UTC on the 1st of every month
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: Trigger a release build even if upstream has no new commits
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync-and-release:
+    if: github.repository == 'a1678991/LichtFeld-Studio'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Rebase onto upstream master
+        id: rebase
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/MrNeRF/LichtFeld-Studio.git
+          git fetch upstream master
+          old_tip=$(git rev-parse HEAD)
+          if ! git rebase upstream/master; then
+            git rebase --abort || true
+            echo "::error::Rebase onto upstream/master hit conflicts; sync manually." >&2
+            exit 1
+          fi
+          new_tip=$(git rev-parse HEAD)
+          if [ "$new_tip" = "$old_tip" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Fork is already up to date with upstream/master ($old_tip)."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git push --force-with-lease origin master
+            echo "Rebased onto $(git rev-parse upstream/master) and pushed $new_tip."
+          fi
+
+      - name: Trigger release build
+        if: steps.rebase.outputs.changed == 'true' || inputs.force_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run fork-release.yml -R "$GITHUB_REPOSITORY" --ref master
+          echo "Dispatched fork-release.yml on master."
